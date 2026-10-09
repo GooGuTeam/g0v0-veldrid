@@ -39,6 +39,17 @@ namespace Veldrid.Vk
         private bool destroyed;
         private string name;
 
+        // Pipelines and framebuffers must use identical dependencies for render-pass compatibility.
+        internal static VkSubpassDependency CreateAttachmentDependency() => new VkSubpassDependency
+        {
+            srcSubpass = SubpassExternal,
+            srcStageMask = VkPipelineStageFlags.AllCommands,
+            srcAccessMask = VkAccessFlags.MemoryRead | VkAccessFlags.MemoryWrite,
+            dstStageMask = VkPipelineStageFlags.ColorAttachmentOutput | VkPipelineStageFlags.EarlyFragmentTests | VkPipelineStageFlags.LateFragmentTests,
+            dstAccessMask = VkAccessFlags.ColorAttachmentRead | VkAccessFlags.ColorAttachmentWrite
+                            | VkAccessFlags.DepthStencilAttachmentRead | VkAccessFlags.DepthStencilAttachmentWrite
+        };
+
         public VkFramebuffer(VkGraphicsDevice gd, ref FramebufferDescription description, bool isPresented)
             : base(description.DepthTarget, description.ColorTargets)
         {
@@ -120,13 +131,7 @@ namespace Veldrid.Vk
                 attachments.Add(depthAttachmentDesc);
             }
 
-            var subpassDependency = new VkSubpassDependency
-            {
-                srcSubpass = SubpassExternal,
-                srcStageMask = VkPipelineStageFlags.ColorAttachmentOutput,
-                dstStageMask = VkPipelineStageFlags.ColorAttachmentOutput,
-                dstAccessMask = VkAccessFlags.ColorAttachmentRead | VkAccessFlags.ColorAttachmentWrite
-            };
+            var subpassDependency = CreateAttachmentDependency();
 
             renderPassCi.attachmentCount = attachments.Count;
             renderPassCi.pAttachments = (VkAttachmentDescription*)attachments.Data;

@@ -323,13 +323,7 @@ namespace Veldrid.Vk
                 attachments.Add(depthAttachmentDesc);
             }
 
-            var subpassDependency = new VkSubpassDependency
-            {
-                srcSubpass = SubpassExternal,
-                srcStageMask = VkPipelineStageFlags.ColorAttachmentOutput,
-                dstStageMask = VkPipelineStageFlags.ColorAttachmentOutput,
-                dstAccessMask = VkAccessFlags.ColorAttachmentRead | VkAccessFlags.ColorAttachmentWrite
-            };
+            var subpassDependency = VkFramebuffer.CreateAttachmentDependency();
 
             renderPassCi.attachmentCount = attachments.Count;
             renderPassCi.pAttachments = (VkAttachmentDescription*)attachments.Data;
@@ -343,7 +337,7 @@ namespace Veldrid.Vk
 
             pipelineCi.renderPass = renderPass;
 
-            var result = vkCreateGraphicsPipelines(this.gd.Device, VkPipelineCache.Null, 1, ref pipelineCi, null, out devicePipeline);
+            var result = this.gd.CreateGraphicsPipeline(ref pipelineCi, out devicePipeline);
             CheckResult(result);
 
             ResourceSetCount = (uint)description.ResourceLayouts.Length;
@@ -413,13 +407,7 @@ namespace Veldrid.Vk
             stageCi.pSpecializationInfo = &specializationInfo;
             pipelineCi.stage = stageCi;
 
-            var result = vkCreateComputePipelines(
-                this.gd.Device,
-                VkPipelineCache.Null,
-                1,
-                ref pipelineCi,
-                null,
-                out devicePipeline);
+            var result = this.gd.CreateComputePipeline(ref pipelineCi, out devicePipeline);
             CheckResult(result);
 
             ResourceSetCount = (uint)description.ResourceLayouts.Length;

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -92,6 +92,7 @@ namespace Veldrid.D3D11
 
         private readonly bool canTear;
         private readonly bool canCreateFrameLatencyWaitableObject;
+        private readonly bool lowLatencyPresentation;
         private readonly Format colorFormat;
         private bool vsync;
         private D3D11Framebuffer framebuffer;
@@ -132,6 +133,7 @@ namespace Veldrid.D3D11
 
             width = description.Width;
             height = description.Height;
+            lowLatencyPresentation = this.gd.LowLatencyPresentation;
 
             recreateSwapchain();
         }
@@ -145,6 +147,8 @@ namespace Veldrid.D3D11
                 depthTexture?.Dispose();
                 framebuffer.Dispose();
                 DxgiSwapChain.Dispose();
+                frameLatencyWaitHandle?.Dispose();
+                frameLatencyWaitHandle = null;
 
                 disposed = true;
             }
@@ -204,7 +208,7 @@ namespace Veldrid.D3D11
             };
         }
 
-        public void WaitForNextFrameReady()
+        public override void WaitForNextFrameReady()
         {
             frameLatencyWaitHandle?.WaitOne(1000);
         }
@@ -246,9 +250,14 @@ namespace Veldrid.D3D11
 
             flags = SwapChainFlags.None;
 
-            if (AllowTearing && canTear)
+            if (AllowTearing && canTear && canUseFlipDiscard)
                 flags |= SwapChainFlags.AllowTearing;
-            else if (canCreateFrameLatencyWaitableObject && canUseFlipDiscard)
+
+            // ALLOW_TEARING and FRAME_LATENCY_WAITABLE_OBJECT can coexist on a
+            // windowed flip-model swapchain. Do not disable pacing simply because
+            // the caller permits tearing (e.g. borderless fullscreen).
+            if (canCreateFrameLatencyWaitableObject && canUseFlipDiscard
+                && (lowLatencyPresentation || !(AllowTearing && canTear)))
                 flags |= SwapChainFlags.FrameLatencyWaitableObject;
 
             if (description.Source is Win32SwapchainSource win32Source)
@@ -297,7 +306,9 @@ namespace Veldrid.D3D11
                     using (var swapChain1 = dxgiFactory.CreateSwapChainForComposition(gd.Device, swapChainDescription)) DxgiSwapChain = swapChain1.QueryInterface<IDXGISwapChain2>();
                 }
 
+#pragma warning disable CA1416 // Validate platform compatibility
                 var co = new ComObject(uwpSource.SwapChainPanelNative);
+#pragma warning restore CA1416
 
                 var swapchainPanelNative = co.QueryInterfaceOrNull<ISwapChainPanelNative>();
 

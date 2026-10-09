@@ -656,17 +656,57 @@ namespace Veldrid.Vk
 
             vkCmdCopyBuffer(CommandBuffer, srcVkBuffer.DeviceBuffer, dstVkBuffer.DeviceBuffer, 1, ref region);
 
-            VkMemoryBarrier barrier;
-            barrier.sType = VkStructureType.MemoryBarrier;
+            // Limit visibility to the copied buffer range and its permitted consumers rather than
+            // stalling every pipeline stage and making every resource globally visible.
+            var stages = VkPipelineStageFlags.Transfer;
+            var access = VkAccessFlags.TransferRead | VkAccessFlags.TransferWrite;
+            var usage = destination.Usage;
+            if ((usage & BufferUsage.VertexBuffer) != 0)
+            {
+                stages |= VkPipelineStageFlags.VertexInput;
+                access |= VkAccessFlags.VertexAttributeRead;
+            }
+            if ((usage & BufferUsage.IndexBuffer) != 0)
+            {
+                stages |= VkPipelineStageFlags.VertexInput;
+                access |= VkAccessFlags.IndexRead;
+            }
+            if ((usage & (BufferUsage.UniformBuffer | BufferUsage.StructuredBufferReadOnly | BufferUsage.StructuredBufferReadWrite)) != 0)
+            {
+                // Shader-stage usage is only known at resource binding time. Cover all supported
+                // shader stages here; do not enable optional geometry/tessellation stages blindly.
+                stages |= VkPipelineStageFlags.VertexShader | VkPipelineStageFlags.FragmentShader | VkPipelineStageFlags.ComputeShader;
+                if (gd.Features.GeometryShader) stages |= VkPipelineStageFlags.GeometryShader;
+                if (gd.Features.TessellationShaders) stages |= VkPipelineStageFlags.TessellationControlShader | VkPipelineStageFlags.TessellationEvaluationShader;
+                if ((usage & BufferUsage.UniformBuffer) != 0) access |= VkAccessFlags.UniformRead;
+                if ((usage & (BufferUsage.StructuredBufferReadOnly | BufferUsage.StructuredBufferReadWrite)) != 0) access |= VkAccessFlags.ShaderRead;
+                if ((usage & BufferUsage.StructuredBufferReadWrite) != 0) access |= VkAccessFlags.ShaderWrite;
+            }
+            if ((usage & BufferUsage.IndirectBuffer) != 0)
+            {
+                stages |= VkPipelineStageFlags.DrawIndirect;
+                access |= VkAccessFlags.IndirectCommandRead;
+            }
+            if ((usage & (BufferUsage.Staging | BufferUsage.Dynamic)) != 0)
+            {
+                stages |= VkPipelineStageFlags.Host;
+                access |= VkAccessFlags.HostRead | VkAccessFlags.HostWrite;
+            }
+
+            var barrier = VkBufferMemoryBarrier.New();
             barrier.srcAccessMask = VkAccessFlags.TransferWrite;
-            barrier.dstAccessMask = VkAccessFlags.VertexAttributeRead;
-            barrier.pNext = null;
+            barrier.dstAccessMask = access;
+            barrier.srcQueueFamilyIndex = QueueFamilyIgnored;
+            barrier.dstQueueFamilyIndex = QueueFamilyIgnored;
+            barrier.buffer = dstVkBuffer.DeviceBuffer;
+            barrier.offset = destinationOffset;
+            barrier.size = sizeInBytes;
             vkCmdPipelineBarrier(
                 CommandBuffer,
-                VkPipelineStageFlags.Transfer, VkPipelineStageFlags.VertexInput,
+                VkPipelineStageFlags.Transfer, stages,
                 VkDependencyFlags.None,
-                1, ref barrier,
                 0, null,
+                1, &barrier,
                 0, null);
         }
 

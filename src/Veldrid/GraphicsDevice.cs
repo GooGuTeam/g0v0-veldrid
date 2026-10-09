@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -57,6 +57,16 @@ namespace Veldrid
         ///     Gets the <see cref="ResourceFactory" /> controlled by this instance.
         /// </summary>
         public abstract ResourceFactory ResourceFactory { get; }
+
+        /// <summary>
+        ///     Gets a value indicating whether low-latency presentation is enabled.
+        /// </summary>
+        public virtual bool LowLatencyPresentation { get; protected set; }
+
+        /// <summary>
+        ///     Gets a value indicating whether Vulkan Fullscreen Exclusive mode is enabled.
+        /// </summary>
+        public virtual bool FullScreenExclusiveEnabled { get; protected set; }
 
         /// <summary>
         ///     Retrieves the main Swapchain for this device. This property is only valid if the device was created with a main

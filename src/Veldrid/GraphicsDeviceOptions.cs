@@ -1,4 +1,4 @@
-﻿namespace Veldrid
+namespace Veldrid
 {
     /// <summary>
     ///     A structure describing several common properties of a GraphicsDevice.
@@ -56,6 +56,16 @@
         ///     value of <see cref="SwapchainDescription.ColorSrgb" /> will supercede the value specified here.
         /// </summary>
         public bool SwapchainSrgbFormat;
+
+        /// <summary>
+        ///     Indicates whether low-latency presentation modes and queues should be preferred.
+        /// </summary>
+        public bool LowLatency;
+
+        /// <summary>
+        ///     Indicates whether full-screen exclusive mode should be enabled (if supported by the platform/driver).
+        /// </summary>
+        public bool FullScreenExclusive;
 
         /// <summary>
         ///     Constructs a new GraphicsDeviceOptions for a device with no main Swapchain.

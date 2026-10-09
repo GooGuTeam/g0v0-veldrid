@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Vulkan;
 using static Vulkan.VulkanNative;
@@ -49,6 +49,20 @@ namespace Veldrid.Vk
 
         private VkFramebuffer[] scFramebuffers;
         private VkImage[] scImages = { };
+        private bool[] imageInitialised = Array.Empty<bool>();
+        private VkSemaphore[] presentSemaphores = Array.Empty<VkSemaphore>();
+
+        internal VkSemaphore PresentSemaphore => presentSemaphores[(int)ImageIndex];
+        internal uint ImageCount => (uint)scImages.Length;
+
+        internal void InitialiseAcquiredImage()
+        {
+            if (imageInitialised[(int)ImageIndex])
+                return;
+
+            gd.ClearColorTexture((VkTexture)ColorTargets[0].Target, new VkClearColorValue(0, 0, 0, 0));
+            imageInitialised[(int)ImageIndex] = true;
+        }
         private VkFormat scImageFormat;
         private VkExtent2D scExtent;
         private FramebufferAttachment[][] scColorTextures;
@@ -114,9 +128,18 @@ namespace Veldrid.Vk
             uint scImageCount = 0;
             var result = vkGetSwapchainImagesKHR(gd.Device, deviceSwapchain, ref scImageCount, null);
             CheckResult(result);
-            if (scImages.Length < scImageCount) scImages = new VkImage[(int)scImageCount];
+            if (scImages.Length != scImageCount) scImages = new VkImage[(int)scImageCount];
             result = vkGetSwapchainImagesKHR(gd.Device, deviceSwapchain, ref scImageCount, out scImages[0]);
             CheckResult(result);
+
+            // One binary semaphore per image: reacquisition guarantees its previous present wait completed.
+            foreach (var semaphore in presentSemaphores)
+                vkDestroySemaphore(gd.Device, semaphore, null);
+            presentSemaphores = new VkSemaphore[scImageCount];
+            imageInitialised = new bool[scImageCount];
+            var semaphoreInfo = VkSemaphoreCreateInfo.New();
+            for (int i = 0; i < presentSemaphores.Length; i++)
+                CheckResult(vkCreateSemaphore(gd.Device, ref semaphoreInfo, null, out presentSemaphores[i]));
 
             scImageFormat = surfaceFormat.format;
             scExtent = swapchainExtent;
@@ -132,6 +155,8 @@ namespace Veldrid.Vk
             if (!destroyed)
             {
                 destroyed = true;
+                foreach (var semaphore in presentSemaphores)
+                    vkDestroySemaphore(gd.Device, semaphore, null);
                 depthAttachment?.Target.Dispose();
                 destroySwapchainFramebuffers();
             }

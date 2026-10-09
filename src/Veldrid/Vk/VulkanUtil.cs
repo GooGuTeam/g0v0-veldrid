@@ -111,21 +111,21 @@ namespace Veldrid.Vk
                 srcStageFlags = VkPipelineStageFlags.FragmentShader;
                 dstStageFlags = VkPipelineStageFlags.Transfer;
             }
-            else if (oldLayout == VkImageLayout.Preinitialized && newLayout == VkImageLayout.TransferSrcOptimal)
+            else if ((oldLayout == VkImageLayout.Undefined || oldLayout == VkImageLayout.Preinitialized) && newLayout == VkImageLayout.TransferSrcOptimal)
             {
                 barrier.srcAccessMask = VkAccessFlags.None;
                 barrier.dstAccessMask = VkAccessFlags.TransferRead;
                 srcStageFlags = VkPipelineStageFlags.TopOfPipe;
                 dstStageFlags = VkPipelineStageFlags.Transfer;
             }
-            else if (oldLayout == VkImageLayout.Preinitialized && newLayout == VkImageLayout.General)
+            else if ((oldLayout == VkImageLayout.Undefined || oldLayout == VkImageLayout.Preinitialized) && newLayout == VkImageLayout.General)
             {
                 barrier.srcAccessMask = VkAccessFlags.None;
                 barrier.dstAccessMask = VkAccessFlags.ShaderRead;
                 srcStageFlags = VkPipelineStageFlags.TopOfPipe;
                 dstStageFlags = VkPipelineStageFlags.ComputeShader;
             }
-            else if (oldLayout == VkImageLayout.Preinitialized && newLayout == VkImageLayout.ShaderReadOnlyOptimal)
+            else if ((oldLayout == VkImageLayout.Undefined || oldLayout == VkImageLayout.Preinitialized) && newLayout == VkImageLayout.ShaderReadOnlyOptimal)
             {
                 barrier.srcAccessMask = VkAccessFlags.None;
                 barrier.dstAccessMask = VkAccessFlags.ShaderRead;
@@ -229,7 +229,7 @@ namespace Veldrid.Vk
                 barrier.srcAccessMask = VkAccessFlags.TransferWrite;
                 barrier.dstAccessMask = VkAccessFlags.DepthStencilAttachmentWrite;
                 srcStageFlags = VkPipelineStageFlags.Transfer;
-                dstStageFlags = VkPipelineStageFlags.LateFragmentTests;
+                dstStageFlags = VkPipelineStageFlags.EarlyFragmentTests | VkPipelineStageFlags.LateFragmentTests;
             }
             else if (oldLayout == VkImageLayout.General && newLayout == VkImageLayout.TransferSrcOptimal)
             {

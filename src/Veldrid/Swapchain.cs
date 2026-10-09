@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace Veldrid
 {
@@ -45,5 +45,10 @@ namespace Veldrid
         /// <param name="width">The new width of the Swapchain.</param>
         /// <param name="height">The new height of the Swapchain.</param>
         public abstract void Resize(uint width, uint height);
+
+        /// <summary>
+        ///     Waits until the GPU and swapchain are ready for the next frame to be rendered.
+        /// </summary>
+        public virtual void WaitForNextFrameReady() { }
     }
 }

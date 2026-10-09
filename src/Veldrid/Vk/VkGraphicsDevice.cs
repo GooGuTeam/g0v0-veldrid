@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -116,8 +117,6 @@ namespace Veldrid.Vk
         private bool debugMarkerEnabled;
         private VkDebugMarkerSetObjectNameExtT setObjectNameDelegate;
         private readonly Stack<SharedCommandPool> sharedGraphicsCommandPools = new Stack<SharedCommandPool>();
-        private bool standardValidationSupported;
-        private bool khronosValidationSupported;
         private bool standardClipYDirection;
         private VkGetPhysicalDeviceProperties2T getPhysicalDeviceProperties2;
 
@@ -128,6 +127,15 @@ namespace Veldrid.Vk
 
         public VkGraphicsDevice(GraphicsDeviceOptions options, SwapchainDescription? scDesc, VulkanDeviceOptions vkOptions)
         {
+            LowLatencyPresentation = options.LowLatency || Environment.GetEnvironmentVariable("VELDRID_LOW_LATENCY") != "0";
+            bool requestFse = OperatingSystem.IsWindows() && (options.FullScreenExclusive || Environment.GetEnvironmentVariable("VELDRID_VK_FSE") != "0");
+            if (requestFse && VulkanUtil.GetInstanceExtensions().Contains("VK_KHR_get_surface_capabilities2"))
+            {
+                vkOptions.InstanceExtensions = (vkOptions.InstanceExtensions ?? Array.Empty<string>()).Concat(new[] { "VK_KHR_get_surface_capabilities2" }).Distinct().ToArray();
+                vkOptions.DeviceExtensions = (vkOptions.DeviceExtensions ?? Array.Empty<string>()).Concat(new[] { "VK_EXT_full_screen_exclusive" }).Distinct().ToArray();
+                FullScreenExclusiveEnabled = true;
+            }
+
             createInstance(options.Debug, vkOptions);
 
             var surface = VkSurfaceKHR.Null;
@@ -135,6 +143,13 @@ namespace Veldrid.Vk
 
             createPhysicalDevice();
             createLogicalDevice(surface, options.PreferStandardClipSpaceYDirection, vkOptions);
+
+            // Share compilation data across pipeline variants for this device. Opt out for A/B tests.
+            if (Environment.GetEnvironmentVariable("VELDRID_VK_PIPELINE_CACHE") != "0")
+            {
+                var cacheInfo = VkPipelineCacheCreateInfo.New();
+                CheckResult(vkCreatePipelineCache(device, ref cacheInfo, null, out pipelineCache));
+            }
 
             MemoryManager = new VkDeviceMemoryManager(
                 device,
@@ -529,6 +544,8 @@ namespace Veldrid.Vk
 
             var result = vkDeviceWaitIdle(device);
             CheckResult(result);
+            if (pipelineCache != VkPipelineCache.Null)
+                vkDestroyPipelineCache(device, pipelineCache, null);
             vkDestroyDevice(device, null);
             vkDestroyInstance(instance, null);
         }
@@ -601,6 +618,7 @@ namespace Veldrid.Vk
             VkSemaphore* signalSemaphoresPtr,
             Fence fence)
         {
+            mainSwapchain?.EnsureAcquiredImageReady();
             var vkCl = Util.AssertSubtype<CommandList, VkCommandList>(cl);
             var vkCb = vkCl.CommandBuffer;
 
@@ -831,13 +849,11 @@ namespace Veldrid.Vk
 
                 if (availableInstanceLayers.Contains(CommonStrings.StandardValidationLayerName))
                 {
-                    standardValidationSupported = true;
                     instanceLayers.Add(CommonStrings.StandardValidationLayerName);
                 }
 
                 if (availableInstanceLayers.Contains(CommonStrings.KhronosValidationLayerName))
                 {
-                    khronosValidationSupported = true;
                     instanceLayers.Add(CommonStrings.KhronosValidationLayerName);
                 }
             }
@@ -1008,12 +1024,9 @@ namespace Veldrid.Vk
 
             deviceCreateInfo.pEnabledFeatures = &deviceFeatures;
 
-            var layerNames = new StackList<IntPtr>();
-            if (standardValidationSupported) layerNames.Add(CommonStrings.StandardValidationLayerName);
-
-            if (khronosValidationSupported) layerNames.Add(CommonStrings.KhronosValidationLayerName);
-            deviceCreateInfo.enabledLayerCount = layerNames.Count;
-            deviceCreateInfo.ppEnabledLayerNames = (byte**)layerNames.Data;
+            // Device layers are obsolete; enabled instance layers already intercept device calls.
+            deviceCreateInfo.enabledLayerCount = 0;
+            deviceCreateInfo.ppEnabledLayerNames = null;
 
             fixed (IntPtr* activeExtensionsPtr = activeExtensions)
             {
@@ -1067,7 +1080,26 @@ namespace Veldrid.Vk
             }
         }
 
-        private IntPtr getInstanceProcAddr(string name)
+        // VkPipelineCache requires external host synchronisation. Pipeline creation may occur on
+        // multiple threads, so keep access inside these helpers rather than exposing the handle.
+        private readonly object pipelineCacheLock = new object();
+        private readonly VkPipelineCache pipelineCache;
+
+        internal VkResult CreateGraphicsPipeline(ref VkGraphicsPipelineCreateInfo info, out Vulkan.VkPipeline pipeline)
+        {
+            lock (pipelineCacheLock)
+                return vkCreateGraphicsPipelines(device, pipelineCache, 1, ref info, null, out pipeline);
+        }
+
+        internal VkResult CreateComputePipeline(ref VkComputePipelineCreateInfo info, out Vulkan.VkPipeline pipeline)
+        {
+            lock (pipelineCacheLock)
+                return vkCreateComputePipelines(device, pipelineCache, 1, ref info, null, out pipeline);
+        }
+
+        public override bool FullScreenExclusiveEnabled { get; protected set; }
+
+        internal IntPtr getInstanceProcAddr(string name)
         {
             int byteCount = Encoding.UTF8.GetByteCount(name);
             byte* utf8Ptr = stackalloc byte[byteCount + 1];
@@ -1086,7 +1118,7 @@ namespace Veldrid.Vk
             return default;
         }
 
-        private IntPtr getDeviceProcAddr(string name)
+        internal IntPtr getDeviceProcAddr(string name)
         {
             int byteCount = Encoding.UTF8.GetByteCount(name);
             byte* utf8Ptr = stackalloc byte[byteCount + 1];
@@ -1246,30 +1278,51 @@ namespace Veldrid.Vk
             uint imageIndex = vkSc.ImageIndex;
             presentInfo.pImageIndices = &imageIndex;
 
+            // An empty submission signals after all preceding graphics submissions, including final
+            // layout transitions. QueuePresent must wait on a semaphore even when using the same queue.
+            var renderFinished = vkSc.PresentSemaphore;
+            var signalInfo = VkSubmitInfo.New();
+            signalInfo.signalSemaphoreCount = 1;
+            signalInfo.pSignalSemaphores = &renderFinished;
+            lock (graphicsQueueLock)
+                CheckResult(vkQueueSubmit(graphicsQueue, 1, ref signalInfo, Vulkan.VkFence.Null));
+            presentInfo.waitSemaphoreCount = 1;
+            presentInfo.pWaitSemaphores = &renderFinished;
+
             object presentLock = vkSc.PresentQueueIndex == GraphicsQueueIndex ? graphicsQueueLock : vkSc;
 
             lock (presentLock)
             {
-                vkQueuePresentKHR(vkSc.PresentQueue, ref presentInfo);
+                var presentResult = vkQueuePresentKHR(vkSc.PresentQueue, ref presentInfo);
+                vkSc.HandleFullScreenExclusiveResult(presentResult);
 
                 if (vkSc.AcquireNextImage(device, VkSemaphore.Null, vkSc.ImageAvailableFence))
                 {
-                    var fence = vkSc.ImageAvailableFence;
-                    vkWaitForFences(device, 1, ref fence, true, ulong.MaxValue);
-                    vkResetFences(device, 1, ref fence);
+                    if (LowLatencyPresentation)
+                    {
+                        vkSc.MarkAcquisitionPending();
+                    }
+                    else
+                    {
+                        var fence = vkSc.ImageAvailableFence;
+                        vkWaitForFences(device, 1, ref fence, true, ulong.MaxValue);
+                        vkResetFences(device, 1, ref fence);
+                        vkSc.InitialiseAcquiredImage();
+                    }
                 }
             }
         }
 
         private protected override void WaitForIdleCore()
         {
-            lock (graphicsQueueLock) vkQueueWaitIdle(graphicsQueue);
+            lock (graphicsQueueLock) vkDeviceWaitIdle(device);
 
             checkSubmittedFences();
         }
 
         private protected override void WaitForNextFrameReadyCore()
         {
+            mainSwapchain?.WaitForNextFrameReady();
         }
 
         private protected override bool GetPixelFormatSupportCore(

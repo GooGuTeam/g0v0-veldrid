@@ -93,7 +93,7 @@ namespace Veldrid.Vk
                 imageCi.extent.width = Width;
                 imageCi.extent.height = Height;
                 imageCi.extent.depth = Depth;
-                imageCi.initialLayout = VkImageLayout.Preinitialized;
+                imageCi.initialLayout = VkImageLayout.Undefined;
                 imageCi.usage = VkFormats.VdToVkTextureUsage(Usage);
                 imageCi.tiling = VkImageTiling.Optimal;
                 imageCi.format = VkFormat;
@@ -141,7 +141,7 @@ namespace Veldrid.Vk
                 CheckResult(result);
 
                 imageLayouts = new VkImageLayout[subresourceCount];
-                for (int i = 0; i < imageLayouts.Length; i++) imageLayouts[i] = VkImageLayout.Preinitialized;
+                for (int i = 0; i < imageLayouts.Length; i++) imageLayouts[i] = VkImageLayout.Undefined;
             }
             else // isStaging
             {
@@ -243,7 +243,7 @@ namespace Veldrid.Vk
             imageLayouts = new[] { VkImageLayout.Undefined };
             IsSwapchainTexture = true;
 
-            clearIfRenderTarget();
+            // The swapchain owns this image. It must not be touched until acquired.
             RefCount = new ResourceRefCount(DisposeCore);
         }
 

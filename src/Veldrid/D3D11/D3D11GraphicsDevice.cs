@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -81,10 +81,12 @@ namespace Veldrid.D3D11
         public D3D11GraphicsDevice(GraphicsDeviceOptions options, D3D11DeviceOptions d3D11DeviceOptions, SwapchainDescription? swapchainDesc)
             : this(mergeOptions(d3D11DeviceOptions, options), swapchainDesc)
         {
+            LowLatencyPresentation = options.LowLatency || Environment.GetEnvironmentVariable("VELDRID_LOW_LATENCY") != "0";
         }
 
         public D3D11GraphicsDevice(D3D11DeviceOptions options, SwapchainDescription? swapchainDesc)
         {
+            LowLatencyPresentation = Environment.GetEnvironmentVariable("VELDRID_LOW_LATENCY") != "0";
             var flags = (DeviceCreationFlags)options.DeviceCreationFlags;
 #if DEBUG
             flags |= DeviceCreationFlags.Debug;
@@ -140,6 +142,12 @@ namespace Veldrid.D3D11
                 DeviceName = desc.Description;
                 VendorName = "id:" + ((uint)desc.VendorId).ToString("x8");
                 DeviceId = desc.DeviceId;
+            }
+
+            using (var dxgiDevice1 = device!.QueryInterfaceOrNull<IDXGIDevice1>())
+            {
+                if (dxgiDevice1 != null)
+                    dxgiDevice1.MaximumFrameLatency = 1;
             }
 
             switch (device.FeatureLevel)

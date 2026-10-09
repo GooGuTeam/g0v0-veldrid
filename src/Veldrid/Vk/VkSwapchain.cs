@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using Vulkan;
 using static Vulkan.VulkanNative;
@@ -14,12 +14,19 @@ namespace Veldrid.Vk
 
         public VkSwapchainKHR DeviceSwapchain => deviceSwapchain;
         public uint ImageIndex => currentImageIndex;
+        internal VkSemaphore PresentSemaphore => framebuffer.PresentSemaphore;
+
+        internal void InitialiseAcquiredImage() => framebuffer.InitialiseAcquiredImage();
         public Vulkan.VkFence ImageAvailableFence => imageAvailableFence;
         public VkSurfaceKHR Surface { get; }
 
         public VkQueue PresentQueue => presentQueue;
         public uint PresentQueueIndex => presentQueueIndex;
         public ResourceRefCount RefCount { get; }
+        public bool FullScreenExclusiveSupported => fullScreenExclusiveSupported;
+        public bool FullScreenExclusiveAcquired => fullScreenExclusive?.IsAcquired ?? false;
+        public VkPresentModeKHR CurrentPresentMode => currentPresentMode;
+        public uint ImageCount => framebuffer.ImageCount;
 
         public override string Name
         {
@@ -61,6 +68,9 @@ namespace Veldrid.Vk
         private readonly uint presentQueueIndex;
         private readonly VkQueue presentQueue;
         private readonly bool colorSrgb;
+        private readonly bool lowLatencyPresentation;
+        private VkPresentModeKHR currentPresentMode;
+        private bool acquisitionPending;
         private VkSwapchainKHR deviceSwapchain;
         private Vulkan.VkFence imageAvailableFence;
         private bool syncToVBlank;
@@ -68,6 +78,8 @@ namespace Veldrid.Vk
         private uint currentImageIndex;
         private string name;
         private bool disposed;
+        private readonly VkFullScreenExclusive fullScreenExclusive;
+        private bool fullScreenExclusiveSupported;
 
         public VkSwapchain(VkGraphicsDevice gd, ref SwapchainDescription description)
             : this(gd, ref description, VkSurfaceKHR.Null)
@@ -77,10 +89,13 @@ namespace Veldrid.Vk
         public VkSwapchain(VkGraphicsDevice gd, ref SwapchainDescription description, VkSurfaceKHR existingSurface)
         {
             this.gd = gd;
+            lowLatencyPresentation = gd.LowLatencyPresentation;
             syncToVBlank = description.SyncToVerticalBlank;
             colorSrgb = description.ColorSrgb;
 
             SwapchainSource swapchainSource = description.Source;
+            if (gd.FullScreenExclusiveEnabled && swapchainSource is Win32SwapchainSource win32)
+                fullScreenExclusive = new VkFullScreenExclusive(gd, win32.Hwnd);
 
             Surface = existingSurface == VkSurfaceKHR.Null
                 ? VkSurfaceUtil.CreateSurface(gd, gd.Instance, swapchainSource)
@@ -101,6 +116,7 @@ namespace Veldrid.Vk
             AcquireNextImage(this.gd.Device, VkSemaphore.Null, imageAvailableFence);
             vkWaitForFences(this.gd.Device, 1, ref imageAvailableFence, true, ulong.MaxValue);
             vkResetFences(this.gd.Device, 1, ref imageAvailableFence);
+            InitialiseAcquiredImage();
 
             RefCount = new ResourceRefCount(disposeCore);
         }
@@ -119,6 +135,26 @@ namespace Veldrid.Vk
             recreateAndReacquire(width, height);
         }
 
+        public override void WaitForNextFrameReady()
+        {
+            if (!acquisitionPending)
+                return;
+
+            var fence = imageAvailableFence;
+            vkWaitForFences(gd.Device, 1, ref fence, true, ulong.MaxValue);
+            vkResetFences(gd.Device, 1, ref fence);
+            InitialiseAcquiredImage();
+            acquisitionPending = false;
+        }
+
+        internal void MarkAcquisitionPending() => acquisitionPending = true;
+
+        internal void EnsureAcquiredImageReady()
+        {
+            if (acquisitionPending)
+                WaitForNextFrameReady();
+        }
+
         public bool AcquireNextImage(VkDevice device, VkSemaphore semaphore, Vulkan.VkFence fence)
         {
             if (newSyncToVBlank != null)
@@ -129,6 +165,9 @@ namespace Veldrid.Vk
                 return false;
             }
 
+            if (fullScreenExclusiveSupported)
+                fullScreenExclusive.Update(deviceSwapchain);
+
             var result = vkAcquireNextImageKHR(
                 device,
                 deviceSwapchain,
@@ -136,27 +175,44 @@ namespace Veldrid.Vk
                 semaphore,
                 fence,
                 ref currentImageIndex);
-            framebuffer.SetImageIndex(currentImageIndex);
-
-            if (result == VkResult.ErrorOutOfDateKHR || result == VkResult.SuboptimalKHR)
+            if ((int)result == VkFullScreenExclusive.ModeLost)
             {
-                createSwapchain(framebuffer.Width, framebuffer.Height);
+                fullScreenExclusive?.Lost();
+                recreateAndReacquire(framebuffer.Width, framebuffer.Height);
                 return false;
             }
 
-            if (result != VkResult.Success) throw new VeldridException("Could not acquire next image from the Vulkan swapchain.");
+            if (result == VkResult.ErrorOutOfDateKHR)
+            {
+                recreateAndReacquire(framebuffer.Width, framebuffer.Height);
+                return false;
+            }
 
+            // SUBOPTIMAL still acquired an image and signalled the supplied fence. Consume both
+            // normally; discarding that acquisition and replacing the swapchain loses ownership.
+            if (result != VkResult.Success && result != VkResult.SuboptimalKHR)
+                throw new VeldridException($"Could not acquire next image from the Vulkan swapchain: {result}.");
+
+            framebuffer.SetImageIndex(currentImageIndex);
             return true;
+        }
+
+        internal void HandleFullScreenExclusiveResult(VkResult result)
+        {
+            if ((int)result == VkFullScreenExclusive.ModeLost)
+                fullScreenExclusive?.Lost();
         }
 
         private void recreateAndReacquire(uint width, uint height)
         {
+            acquisitionPending = false;
             if (createSwapchain(width, height))
             {
                 if (AcquireNextImage(gd.Device, VkSemaphore.Null, imageAvailableFence))
                 {
                     vkWaitForFences(gd.Device, 1, ref imageAvailableFence, true, ulong.MaxValue);
                     vkResetFences(gd.Device, 1, ref imageAvailableFence);
+                    InitialiseAcquiredImage();
                 }
             }
         }
@@ -215,11 +271,16 @@ namespace Veldrid.Vk
             result = vkGetPhysicalDeviceSurfacePresentModesKHR(gd.PhysicalDevice, Surface, ref presentModeCount, out presentModes[0]);
             CheckResult(result);
 
+            fullScreenExclusiveSupported = fullScreenExclusive?.Query(Surface) == true;
+            if (fullScreenExclusiveSupported)
+                presentModes = fullScreenExclusive.PresentModes(Surface);
+
             var presentMode = VkPresentModeKHR.FifoKHR;
 
             if (syncToVBlank)
             {
-                if (presentModes.Contains(VkPresentModeKHR.FifoRelaxedKHR))
+                // Strict FIFO preserves the caller's VSync contract in the experiment.
+                if (!lowLatencyPresentation && presentModes.Contains(VkPresentModeKHR.FifoRelaxedKHR))
                     presentMode = VkPresentModeKHR.FifoRelaxedKHR;
             }
             else if (allowTearing && presentModes.Contains(VkPresentModeKHR.ImmediateKHR))
@@ -230,7 +291,13 @@ namespace Veldrid.Vk
                 presentMode = VkPresentModeKHR.ImmediateKHR;
 
             uint maxImageCount = surfaceCapabilities.maxImageCount == 0 ? uint.MaxValue : surfaceCapabilities.maxImageCount;
-            uint imageCount = Math.Min(maxImageCount, surfaceCapabilities.minImageCount + 1);
+            // Swapchain image count is not a frames-in-flight limit. Reducing the
+            // available images can reduce FIFO queue depth, at a throughput cost.
+            // Never request fewer than the surface minimum; keep at least two.
+            uint desiredImageCount = lowLatencyPresentation
+                ? Math.Max(2u, surfaceCapabilities.minImageCount)
+                : surfaceCapabilities.minImageCount + 1;
+            uint imageCount = Math.Min(maxImageCount, desiredImageCount);
 
             var swapchainCi = VkSwapchainCreateInfoKHR.New();
             swapchainCi.surface = Surface;
@@ -263,12 +330,20 @@ namespace Veldrid.Vk
             swapchainCi.clipped = true;
 
             var oldSwapchain = deviceSwapchain;
+            if (oldSwapchain != VkSwapchainKHR.Null)
+                fullScreenExclusive?.Release(oldSwapchain);
             swapchainCi.oldSwapchain = oldSwapchain;
+
+            var win32Info = new VkFullScreenExclusive.Win32Info { SType = 1000255001, Monitor = fullScreenExclusive?.Monitor ?? IntPtr.Zero };
+            var exclusiveInfo = new VkFullScreenExclusive.ExclusiveInfo { SType = 1000255000, Next = &win32Info, Mode = 3 };
+            if (fullScreenExclusiveSupported)
+                swapchainCi.pNext = &exclusiveInfo;
 
             result = vkCreateSwapchainKHR(gd.Device, ref swapchainCi, null, out deviceSwapchain);
             CheckResult(result);
             if (oldSwapchain != VkSwapchainKHR.Null) vkDestroySwapchainKHR(gd.Device, oldSwapchain, null);
 
+            currentPresentMode = presentMode;
             framebuffer.SetNewSwapchain(deviceSwapchain, width, height, surfaceFormat, swapchainCi.imageExtent);
             return true;
         }
@@ -307,6 +382,14 @@ namespace Veldrid.Vk
 
         private void disposeCore()
         {
+            if (acquisitionPending)
+            {
+                var fence = imageAvailableFence;
+                vkWaitForFences(gd.Device, 1, ref fence, true, ulong.MaxValue);
+                acquisitionPending = false;
+            }
+
+            fullScreenExclusive?.Release(deviceSwapchain);
             vkDestroyFence(gd.Device, imageAvailableFence, null);
             framebuffer.Dispose();
             vkDestroySwapchainKHR(gd.Device, deviceSwapchain, null);
