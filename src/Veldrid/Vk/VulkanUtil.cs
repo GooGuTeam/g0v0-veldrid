@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using Vulkan;
 using static Vulkan.VulkanNative;
@@ -208,6 +208,13 @@ namespace Veldrid.Vk
                 barrier.srcAccessMask = VkAccessFlags.ColorAttachmentWrite;
                 barrier.dstAccessMask = VkAccessFlags.MemoryRead;
                 srcStageFlags = VkPipelineStageFlags.ColorAttachmentOutput;
+                dstStageFlags = VkPipelineStageFlags.BottomOfPipe;
+            }
+            else if (oldLayout == VkImageLayout.TransferSrcOptimal && newLayout == VkImageLayout.PresentSrcKHR)
+            {
+                barrier.srcAccessMask = VkAccessFlags.TransferRead;
+                barrier.dstAccessMask = 0;
+                srcStageFlags = VkPipelineStageFlags.Transfer;
                 dstStageFlags = VkPipelineStageFlags.BottomOfPipe;
             }
             else if (oldLayout == VkImageLayout.TransferDstOptimal && newLayout == VkImageLayout.PresentSrcKHR)

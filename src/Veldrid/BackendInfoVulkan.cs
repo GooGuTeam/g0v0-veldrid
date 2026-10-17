@@ -1,4 +1,4 @@
-﻿#if !EXCLUDE_VULKAN_BACKEND
+#if !EXCLUDE_VULKAN_BACKEND
 using System;
 using System.Collections.ObjectModel;
 using Veldrid.Vk;
@@ -37,6 +37,30 @@ namespace Veldrid
         ///     Gets the queue family index of the graphics VkQueue.
         /// </summary>
         public uint GraphicsQueueFamilyIndex => gd.GraphicsQueueIndex;
+
+        /// <summary>
+        /// Whether the main swapchain was created with transfer-source usage for GPU capture.
+        /// </summary>
+        public bool SupportsFrameCapture => gd.MainSwapchain is VkSwapchain swapchain && swapchain.SupportsFrameCapture;
+
+        /// <summary>
+        /// Whether the external-memory/keyed-mutex dependency bundle was enabled.
+        /// This does not prove that a particular image format/handle is importable.
+        /// </summary>
+        public bool Win32CaptureInteropEnabled => gd.Win32CaptureInteropEnabled;
+
+        /// <summary>
+        /// Submits an externally recorded capture command buffer using Veldrid's
+        /// graphics queue lock and acquired-image ordering. Call on the render thread
+        /// after rendering and before presentation. A native VkSubmitInfo pNext chain
+        /// may carry keyed-mutex operations; it must remain valid until this call returns.
+        /// Caller owns a same-device, unsignalled fence and all command/resource lifetimes,
+        /// and must wait for completion before resetting or destroying them. Do not alter
+        /// Veldrid-owned image layouts unless restored before the submission completes.
+        /// This method does not validate arbitrary native handles or pNext structures.
+        /// </summary>
+        public void SubmitExternalCapture(IntPtr commandBuffer, IntPtr submitNext, ulong completionFence)
+            => gd.SubmitExternalCapture(commandBuffer, submitNext, completionFence);
 
         /// <summary>
         ///     Gets the driver name of the device. May be null.

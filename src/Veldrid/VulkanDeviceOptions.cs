@@ -1,4 +1,4 @@
-﻿namespace Veldrid
+namespace Veldrid
 {
     /// <summary>
     ///     A structure describing Vulkan-specific device creation options.
@@ -18,6 +18,12 @@
         public string[] DeviceExtensions;
 
         /// <summary>
+        /// Requests the Win32 external-memory/keyed-mutex extension bundle if all
+        /// dependencies are available. Missing support never prevents device creation.
+        /// </summary>
+        public bool EnableWin32CaptureInterop;
+
+        /// <summary>
         ///     Constructs a new VulkanDeviceOptions.
         /// </summary>
         /// <param name="instanceExtensions">
@@ -32,6 +38,7 @@
         {
             InstanceExtensions = instanceExtensions;
             DeviceExtensions = deviceExtensions;
+            EnableWin32CaptureInterop = false;
         }
     }
 }

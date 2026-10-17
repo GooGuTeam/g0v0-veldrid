@@ -117,6 +117,7 @@ namespace Veldrid.Vk
         private bool debugMarkerEnabled;
         private VkDebugMarkerSetObjectNameExtT setObjectNameDelegate;
         private readonly Stack<SharedCommandPool> sharedGraphicsCommandPools = new Stack<SharedCommandPool>();
+        internal int PreferredPresentMode { get; }
         private bool standardClipYDirection;
         private VkGetPhysicalDeviceProperties2T getPhysicalDeviceProperties2;
 
@@ -128,11 +129,12 @@ namespace Veldrid.Vk
         public VkGraphicsDevice(GraphicsDeviceOptions options, SwapchainDescription? scDesc, VulkanDeviceOptions vkOptions)
         {
             LowLatencyPresentation = options.LowLatency || Environment.GetEnvironmentVariable("VELDRID_LOW_LATENCY") != "0";
-            bool requestFse = OperatingSystem.IsWindows() && (options.FullScreenExclusive || Environment.GetEnvironmentVariable("VELDRID_VK_FSE") != "0");
+            PreferredPresentMode = options.PreferredVulkanPresentMode ?? -1;
+            bool requestFse = OperatingSystem.IsWindows() && (options.RequestVulkanExclusiveFullscreen
+                ?? (options.FullScreenExclusive || Environment.GetEnvironmentVariable("VELDRID_VK_FSE") != "0"));
             if (requestFse && VulkanUtil.GetInstanceExtensions().Contains("VK_KHR_get_surface_capabilities2"))
             {
                 vkOptions.InstanceExtensions = (vkOptions.InstanceExtensions ?? Array.Empty<string>()).Concat(new[] { "VK_KHR_get_surface_capabilities2" }).Distinct().ToArray();
-                vkOptions.DeviceExtensions = (vkOptions.DeviceExtensions ?? Array.Empty<string>()).Concat(new[] { "VK_EXT_full_screen_exclusive" }).Distinct().ToArray();
                 FullScreenExclusiveEnabled = true;
             }
 
@@ -141,7 +143,7 @@ namespace Veldrid.Vk
             var surface = VkSurfaceKHR.Null;
             if (scDesc != null) surface = VkSurfaceUtil.CreateSurface(this, instance, scDesc.Value.Source);
 
-            createPhysicalDevice();
+            createPhysicalDevice(surface, vkOptions);
             createLogicalDevice(surface, options.PreferStandardClipSpaceYDirection, vkOptions);
 
             // Share compilation data across pipeline variants for this device. Opt out for A/B tests.
@@ -226,18 +228,23 @@ namespace Veldrid.Vk
 
         public VkExtensionProperties[] GetDeviceExtensionProperties()
         {
-            uint propertyCount = 0;
-            var result = vkEnumerateDeviceExtensionProperties(PhysicalDevice, (byte*)null, &propertyCount, null);
-            CheckResult(result);
-            var props = new VkExtensionProperties[(int)propertyCount];
-
-            fixed (VkExtensionProperties* properties = props)
+            for (int attempt = 0; attempt < 3; attempt++)
             {
-                result = vkEnumerateDeviceExtensionProperties(PhysicalDevice, (byte*)null, &propertyCount, properties);
+                uint count = 0;
+                CheckResult(vkEnumerateDeviceExtensionProperties(PhysicalDevice, (byte*)null, &count, null));
+                if (count == 0)
+                    return Array.Empty<VkExtensionProperties>();
+                var props = new VkExtensionProperties[count];
+                VkResult result;
+                fixed (VkExtensionProperties* properties = props)
+                    result = vkEnumerateDeviceExtensionProperties(PhysicalDevice, (byte*)null, &count, properties);
+                if (result == VkResult.Incomplete)
+                    continue;
                 CheckResult(result);
+                Array.Resize(ref props, (int)count);
+                return props;
             }
-
-            return props;
+            throw new VeldridException("Vulkan device extension enumeration did not stabilise.");
         }
 
         public override TextureSampleCount GetSampleCountLimit(PixelFormat format, bool depthFormat)
@@ -768,6 +775,8 @@ namespace Veldrid.Vk
             CheckResult(result);
         }
 
+        private bool captureInstanceCapabilities;
+
         private void createInstance(bool debug, VulkanDeviceOptions options)
         {
             var availableInstanceLayers = new HashSet<string>(EnumerateInstanceLayers());
@@ -835,6 +844,15 @@ namespace Veldrid.Vk
                 var utf8Str = new FixedUtf8String(requiredExt);
                 instanceExtensions.Add(utf8Str);
                 tempStrings.Add(utf8Str);
+            }
+
+            captureInstanceCapabilities = OperatingSystem.IsWindows() && options.EnableWin32CaptureInterop
+                && hasDeviceProperties2 && availableInstanceExtensions.Contains("VK_KHR_external_memory_capabilities");
+            if (captureInstanceCapabilities && !requestedInstanceExtensions.Contains("VK_KHR_external_memory_capabilities"))
+            {
+                var capability = new FixedUtf8String("VK_KHR_external_memory_capabilities");
+                instanceExtensions.Add(capability);
+                tempStrings.Add(capability);
             }
 
             bool debugReportExtensionAvailable = false;
@@ -905,16 +923,47 @@ namespace Veldrid.Vk
             return 0;
         }
 
-        private void createPhysicalDevice()
+        private void createPhysicalDevice(VkSurfaceKHR surface, VulkanDeviceOptions options)
         {
-            uint deviceCount = 0;
-            vkEnumeratePhysicalDevices(instance, ref deviceCount, null);
-            if (deviceCount == 0) throw new InvalidOperationException("No physical devices exist.");
+            VkPhysicalDevice[] physicalDevices = null;
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                uint count = 0;
+                CheckResult(vkEnumeratePhysicalDevices(instance, ref count, null));
+                if (count == 0)
+                    throw new VeldridException("No Vulkan physical devices exist.");
+                var candidates = new VkPhysicalDevice[count];
+                var result = vkEnumeratePhysicalDevices(instance, ref count, ref candidates[0]);
+                if (result == VkResult.Incomplete)
+                    continue;
+                CheckResult(result);
+                Array.Resize(ref candidates, (int)count);
+                physicalDevices = candidates;
+                break;
+            }
+            if (physicalDevices == null)
+                throw new VeldridException("Vulkan physical device enumeration did not stabilise.");
 
-            var physicalDevices = new VkPhysicalDevice[deviceCount];
-            vkEnumeratePhysicalDevices(instance, ref deviceCount, ref physicalDevices[0]);
-            // Just use the first one.
-            PhysicalDevice = physicalDevices[0];
+            bool selected = false;
+            // Preserve driver enumeration order, but reject devices unable to present this surface.
+            foreach (var candidate in physicalDevices)
+            {
+                PhysicalDevice = candidate;
+                var extensions = new HashSet<string>();
+                foreach (var extension in GetDeviceExtensionProperties())
+                    extensions.Add(Util.GetString(extension.extensionName));
+                if ((surface != VkSurfaceKHR.Null && !extensions.Contains("VK_KHR_swapchain"))
+                    || (options.DeviceExtensions ?? Array.Empty<string>()).Any(e => !extensions.Contains(e)))
+                    continue;
+                if (!tryGetQueueFamilyIndices(surface, out var graphics, out var present))
+                    continue;
+                GraphicsQueueIndex = graphics;
+                PresentQueueIndex = present;
+                selected = true;
+                break;
+            }
+            if (!selected)
+                throw new VeldridException("No Vulkan device supports the requested extensions and graphics/presentation queues.");
 
             vkGetPhysicalDeviceProperties(PhysicalDevice, out physicalDeviceProperties);
             fixed (byte* utf8NamePtr = physicalDeviceProperties.deviceName) deviceName = Encoding.UTF8.GetString(utf8NamePtr, (int)MaxPhysicalDeviceNameSize).TrimEnd('\0');
@@ -930,20 +979,18 @@ namespace Veldrid.Vk
 
         private void createLogicalDevice(VkSurfaceKHR surface, bool preferStandardClipY, VulkanDeviceOptions options)
         {
-            getQueueFamilyIndices(surface);
-
             var familyIndices = new HashSet<uint> { GraphicsQueueIndex, PresentQueueIndex };
             var queueCreateInfos = stackalloc VkDeviceQueueCreateInfo[familyIndices.Count];
             uint queueCreateInfosCount = (uint)familyIndices.Count;
 
             int i = 0;
 
-            foreach (uint _ in familyIndices)
+            float priority = 1f;
+            foreach (uint familyIndex in familyIndices)
             {
                 var queueCreateInfo = VkDeviceQueueCreateInfo.New();
-                queueCreateInfo.queueFamilyIndex = GraphicsQueueIndex;
+                queueCreateInfo.queueFamilyIndex = familyIndex;
                 queueCreateInfo.queueCount = 1;
-                float priority = 1f;
                 queueCreateInfo.pQueuePriorities = &priority;
                 queueCreateInfos[i] = queueCreateInfo;
                 i += 1;
@@ -954,6 +1001,32 @@ namespace Veldrid.Vk
             var props = GetDeviceExtensionProperties();
 
             var requiredInstanceExtensions = new HashSet<string>(options.DeviceExtensions ?? Array.Empty<string>());
+            if (FullScreenExclusiveEnabled)
+            {
+                bool supported = false;
+                foreach (var property in props)
+                    supported |= Util.GetString(property.extensionName) == "VK_EXT_full_screen_exclusive";
+                FullScreenExclusiveEnabled = supported;
+                if (supported)
+                    requiredInstanceExtensions.Add("VK_EXT_full_screen_exclusive");
+            }
+
+            // Vulkan 1.0-compatible dependency bundle. Negotiate atomically so a
+            // partial extension set is never advertised as a usable capture path.
+            string[] captureExtensions = {
+                "VK_KHR_external_memory", "VK_KHR_external_memory_win32",
+                "VK_KHR_win32_keyed_mutex", "VK_KHR_get_memory_requirements2",
+                "VK_KHR_dedicated_allocation"
+            };
+            if (captureInstanceCapabilities && options.EnableWin32CaptureInterop)
+            {
+                var available = new HashSet<string>();
+                foreach (var property in props)
+                    available.Add(Util.GetString(property.extensionName));
+                Win32CaptureInteropEnabled = captureExtensions.All(available.Contains);
+                if (Win32CaptureInteropEnabled)
+                    requiredInstanceExtensions.UnionWith(captureExtensions);
+            }
 
             bool hasMemReqs2 = false;
             bool hasDedicatedAllocation = false;
@@ -1137,10 +1210,13 @@ namespace Veldrid.Vk
             return default;
         }
 
-        private void getQueueFamilyIndices(VkSurfaceKHR surface)
+        private bool tryGetQueueFamilyIndices(VkSurfaceKHR surface, out uint graphics, out uint present)
         {
+            graphics = present = 0;
             uint queueFamilyCount = 0;
             vkGetPhysicalDeviceQueueFamilyProperties(PhysicalDevice, ref queueFamilyCount, null);
+            if (queueFamilyCount == 0)
+                return false;
             var qfp = new VkQueueFamilyProperties[queueFamilyCount];
             vkGetPhysicalDeviceQueueFamilyProperties(PhysicalDevice, ref queueFamilyCount, out qfp[0]);
 
@@ -1149,25 +1225,44 @@ namespace Veldrid.Vk
 
             for (uint i = 0; i < qfp.Length; i++)
             {
-                if ((qfp[i].queueFlags & VkQueueFlags.Graphics) != 0)
+                if (qfp[i].queueCount == 0)
+                    continue;
+
+                if (!foundGraphics && (qfp[i].queueFlags & VkQueueFlags.Graphics) != 0)
                 {
-                    GraphicsQueueIndex = i;
+                    graphics = i;
                     foundGraphics = true;
                 }
 
-                if (!foundPresent)
+                if (surface == VkSurfaceKHR.Null)
                 {
-                    vkGetPhysicalDeviceSurfaceSupportKHR(PhysicalDevice, i, surface, out var presentSupported);
-
-                    if (presentSupported)
+                    if (foundGraphics)
                     {
-                        PresentQueueIndex = i;
-                        foundPresent = true;
+                        present = graphics;
+                        return true;
                     }
+                    continue;
                 }
 
-                if (foundGraphics && foundPresent) return;
+                var result = vkGetPhysicalDeviceSurfaceSupportKHR(PhysicalDevice, i, surface, out var presentSupported);
+                if (result == VkResult.ErrorSurfaceLostKHR)
+                    CheckResult(result);
+                if (result != VkResult.Success || !presentSupported)
+                    continue;
+
+                if ((qfp[i].queueFlags & VkQueueFlags.Graphics) != 0)
+                {
+                    graphics = present = i;
+                    return true;
+                }
+                if (!foundPresent)
+                {
+                    present = i;
+                    foundPresent = true;
+                }
             }
+
+            return foundGraphics && foundPresent;
         }
 
         private void createDescriptorPool()
@@ -1263,6 +1358,26 @@ namespace Veldrid.Vk
             return newBuffer;
         }
 
+        internal bool Win32CaptureInteropEnabled { get; private set; }
+
+        // Caller owns command buffer/fence/resource lifetimes. This raw submission
+        // deliberately does not enter Veldrid's command-list recycling machinery.
+        internal void SubmitExternalCapture(IntPtr commandBuffer, IntPtr next, ulong fence)
+        {
+            if (!Win32CaptureInteropEnabled)
+                throw new VeldridException("Win32 capture interop was not enabled at device creation.");
+            if (commandBuffer == IntPtr.Zero || fence == 0)
+                throw new ArgumentException("External capture requires a command buffer and completion fence.");
+            mainSwapchain?.EnsureAcquiredImageReady();
+            var cb = new VkCommandBuffer(commandBuffer);
+            var info = VkSubmitInfo.New();
+            info.pNext = next.ToPointer();
+            info.commandBufferCount = 1;
+            info.pCommandBuffers = &cb;
+            lock (graphicsQueueLock)
+                CheckResult(vkQueueSubmit(graphicsQueue, 1, ref info, new Vulkan.VkFence(fence)));
+        }
+
         private protected override void SubmitCommandsCore(CommandList cl, Fence fence)
         {
             submitCommandList(cl, 0, null, 0, null, fence);
@@ -1295,6 +1410,9 @@ namespace Veldrid.Vk
             {
                 var presentResult = vkQueuePresentKHR(vkSc.PresentQueue, ref presentInfo);
                 vkSc.HandleFullScreenExclusiveResult(presentResult);
+                if (presentResult != VkResult.Success && presentResult != VkResult.SuboptimalKHR
+                    && presentResult != VkResult.ErrorOutOfDateKHR && (int)presentResult != VkFullScreenExclusive.ModeLost)
+                    CheckResult(presentResult);
 
                 if (vkSc.AcquireNextImage(device, VkSemaphore.Null, vkSc.ImageAvailableFence))
                 {
@@ -1305,8 +1423,8 @@ namespace Veldrid.Vk
                     else
                     {
                         var fence = vkSc.ImageAvailableFence;
-                        vkWaitForFences(device, 1, ref fence, true, ulong.MaxValue);
-                        vkResetFences(device, 1, ref fence);
+                        CheckResult(vkWaitForFences(device, 1, ref fence, true, ulong.MaxValue));
+                        CheckResult(vkResetFences(device, 1, ref fence));
                         vkSc.InitialiseAcquiredImage();
                     }
                 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace Veldrid
 {
@@ -7,6 +7,9 @@ namespace Veldrid
     /// </summary>
     public struct D3D11DeviceOptions
     {
+        internal bool PreferExclusiveFullscreen;
+        internal bool LowLatency;
+
         /// <summary>
         ///     Native pointer to an adapter.
         /// </summary>

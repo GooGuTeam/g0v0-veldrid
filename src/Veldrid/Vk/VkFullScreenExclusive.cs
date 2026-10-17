@@ -4,7 +4,7 @@ using Vulkan;
 
 namespace Veldrid.Vk
 {
-    // Opt-in Win32 experiment. Bind locally because the pinned Vulkan bindings predate this extension.
+    // Bind locally because the pinned Vulkan bindings predate this optional Win32 extension.
     internal sealed unsafe class VkFullScreenExclusive
     {
         internal const int ModeLost = -1000255000;
@@ -70,14 +70,23 @@ namespace Veldrid.Vk
         {
             this.gd = gd;
             this.hwnd = hwnd;
-            getCapabilities = Marshal.GetDelegateForFunctionPointer<GetCapabilities>(gd.getInstanceProcAddr("vkGetPhysicalDeviceSurfaceCapabilities2KHR"));
-            getPresentModes = Marshal.GetDelegateForFunctionPointer<GetPresentModes>(gd.getInstanceProcAddr("vkGetPhysicalDeviceSurfacePresentModes2EXT"));
-            acquire = Marshal.GetDelegateForFunctionPointer<ExclusiveMode>(gd.getDeviceProcAddr("vkAcquireFullScreenExclusiveModeEXT"));
-            release = Marshal.GetDelegateForFunctionPointer<ExclusiveMode>(gd.getDeviceProcAddr("vkReleaseFullScreenExclusiveModeEXT"));
+            getCapabilities = bind<GetCapabilities>(gd.getInstanceProcAddr("vkGetPhysicalDeviceSurfaceCapabilities2KHR"));
+            getPresentModes = bind<GetPresentModes>(gd.getInstanceProcAddr("vkGetPhysicalDeviceSurfacePresentModes2EXT"));
+            acquire = bind<ExclusiveMode>(gd.getDeviceProcAddr("vkAcquireFullScreenExclusiveModeEXT"));
+            release = bind<ExclusiveMode>(gd.getDeviceProcAddr("vkReleaseFullScreenExclusiveModeEXT"));
+            if (!IsAvailable)
+                Console.WriteLine("[VK FSE] required extension entry points unavailable; using ordinary Vulkan presentation.");
         }
+
+        internal bool IsAvailable => getCapabilities != null && getPresentModes != null && acquire != null && release != null;
+
+        private static T bind<T>(IntPtr address) where T : Delegate =>
+            address == IntPtr.Zero ? null : Marshal.GetDelegateForFunctionPointer<T>(address);
 
         internal bool Query(VkSurfaceKHR surface)
         {
+            if (!IsAvailable)
+                return false;
             Monitor = MonitorFromWindow(hwnd, 2);
             var win32 = new Win32Info { SType = 1000255001, Monitor = Monitor };
             var exclusive = new ExclusiveInfo { SType = 1000255000, Next = &win32, Mode = 3 };
@@ -94,20 +103,31 @@ namespace Veldrid.Vk
             var win32 = new Win32Info { SType = 1000255001, Monitor = Monitor };
             var exclusive = new ExclusiveInfo { SType = 1000255000, Next = &win32, Mode = 3 };
             var info = new SurfaceInfo { SType = 1000119000, Next = &exclusive, Surface = surface };
-            uint count = 0;
-            VulkanUtil.CheckResult(getPresentModes(gd.PhysicalDevice, &info, &count, null));
-            var modes = new VkPresentModeKHR[count];
-            fixed (VkPresentModeKHR* data = modes)
-                VulkanUtil.CheckResult(getPresentModes(gd.PhysicalDevice, &info, &count, data));
-            Array.Resize(ref modes, (int)count);
-            return modes;
+            // This optional extension must not prevent ordinary Vulkan presentation.
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                uint count = 0;
+                if (getPresentModes(gd.PhysicalDevice, &info, &count, null) != VkResult.Success || count == 0)
+                    return Array.Empty<VkPresentModeKHR>();
+                var modes = new VkPresentModeKHR[count];
+                VkResult result;
+                fixed (VkPresentModeKHR* data = modes)
+                    result = getPresentModes(gd.PhysicalDevice, &info, &count, data);
+                if (result == VkResult.Incomplete)
+                    continue;
+                if (result != VkResult.Success)
+                    return Array.Empty<VkPresentModeKHR>();
+                Array.Resize(ref modes, (int)count);
+                return modes;
+            }
+            return Array.Empty<VkPresentModeKHR>();
         }
 
         internal void Update(VkSwapchainKHR swapchain)
         {
             // Do not take exclusive ownership for a windowed, minimised, unfocused or moved window.
             var monitorInfo = new MonitorInfo { Size = (uint)Marshal.SizeOf<MonitorInfo>() };
-            bool eligible = GetForegroundWindow() == hwnd && !IsIconic(hwnd)
+            bool eligible = gd.ExclusiveFullscreenAllowed && GetForegroundWindow() == hwnd && !IsIconic(hwnd)
                             && MonitorFromWindow(hwnd, 2) == Monitor
                             && GetWindowRect(hwnd, out var rect) && GetMonitorInfo(Monitor, ref monitorInfo)
                             && rect.Left == monitorInfo.Bounds.Left && rect.Top == monitorInfo.Bounds.Top

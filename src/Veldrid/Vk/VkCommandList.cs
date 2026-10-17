@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
@@ -733,6 +733,11 @@ namespace Veldrid.Vk
             currentStagingInfo.Resources.Add(srcVkTexture.RefCount);
             var dstVkTexture = Util.AssertSubtype<Texture, VkTexture>(destination);
             currentStagingInfo.Resources.Add(dstVkTexture.RefCount);
+
+            // A capture-only command list has no active framebuffer whose End() could
+            // restore the presentation layout. Never present a TransferSrcOptimal image.
+            if (srcVkTexture.IsSwapchainTexture)
+                srcVkTexture.TransitionImageLayout(CommandBuffer, srcMipLevel, 1, srcBaseArrayLayer, layerCount, VkImageLayout.PresentSrcKHR);
         }
 
         private VkCommandBuffer getNextCommandBuffer()

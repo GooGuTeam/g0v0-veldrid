@@ -27,6 +27,8 @@ namespace Veldrid.Vk
         public bool FullScreenExclusiveAcquired => fullScreenExclusive?.IsAcquired ?? false;
         public VkPresentModeKHR CurrentPresentMode => currentPresentMode;
         public uint ImageCount => framebuffer.ImageCount;
+        public bool SupportsFrameCapture { get; private set; }
+        public bool AcquirePacingActive => lowLatencyPresentation;
 
         public override string Name
         {
@@ -43,7 +45,7 @@ namespace Veldrid.Vk
             get => newSyncToVBlank ?? syncToVBlank;
             set
             {
-                if (syncToVBlank != value) newSyncToVBlank = value;
+                newSyncToVBlank = syncToVBlank == value ? null : value;
             }
         }
 
@@ -107,16 +109,20 @@ namespace Veldrid.Vk
 
             framebuffer = new VkSwapchainFramebuffer(gd, this, Surface, description.Width, description.Height, description.DepthFormat);
 
-            createSwapchain(description.Width, description.Height);
+            if (!createSwapchain(description.Width, description.Height))
+                throw new VeldridException("The Vulkan surface has no drawable extent during initialisation.");
 
             var fenceCi = VkFenceCreateInfo.New();
             fenceCi.flags = VkFenceCreateFlags.None;
-            vkCreateFence(this.gd.Device, ref fenceCi, null, out imageAvailableFence);
+            CheckResult(vkCreateFence(this.gd.Device, ref fenceCi, null, out imageAvailableFence));
 
-            AcquireNextImage(this.gd.Device, VkSemaphore.Null, imageAvailableFence);
-            vkWaitForFences(this.gd.Device, 1, ref imageAvailableFence, true, ulong.MaxValue);
-            vkResetFences(this.gd.Device, 1, ref imageAvailableFence);
-            InitialiseAcquiredImage();
+            // A false result means recreation already consumed and reset the acquisition fence.
+            if (AcquireNextImage(this.gd.Device, VkSemaphore.Null, imageAvailableFence))
+            {
+                CheckResult(vkWaitForFences(this.gd.Device, 1, ref imageAvailableFence, true, ulong.MaxValue));
+                CheckResult(vkResetFences(this.gd.Device, 1, ref imageAvailableFence));
+                InitialiseAcquiredImage();
+            }
 
             RefCount = new ResourceRefCount(disposeCore);
         }
@@ -141,8 +147,8 @@ namespace Veldrid.Vk
                 return;
 
             var fence = imageAvailableFence;
-            vkWaitForFences(gd.Device, 1, ref fence, true, ulong.MaxValue);
-            vkResetFences(gd.Device, 1, ref fence);
+            CheckResult(vkWaitForFences(gd.Device, 1, ref fence, true, ulong.MaxValue));
+            CheckResult(vkResetFences(gd.Device, 1, ref fence));
             InitialiseAcquiredImage();
             acquisitionPending = false;
         }
@@ -168,13 +174,7 @@ namespace Veldrid.Vk
             if (fullScreenExclusiveSupported)
                 fullScreenExclusive.Update(deviceSwapchain);
 
-            var result = vkAcquireNextImageKHR(
-                device,
-                deviceSwapchain,
-                ulong.MaxValue,
-                semaphore,
-                fence,
-                ref currentImageIndex);
+            var result = acquireImage(device, semaphore, fence);
             if ((int)result == VkFullScreenExclusive.ModeLost)
             {
                 fullScreenExclusive?.Lost();
@@ -203,18 +203,45 @@ namespace Veldrid.Vk
                 fullScreenExclusive?.Lost();
         }
 
+        private VkResult acquireImage(VkDevice device, VkSemaphore semaphore, Vulkan.VkFence fence) =>
+            vkAcquireNextImageKHR(device, deviceSwapchain, ulong.MaxValue, semaphore, fence, ref currentImageIndex);
+
         private void recreateAndReacquire(uint width, uint height)
         {
-            acquisitionPending = false;
-            if (createSwapchain(width, height))
+            // A pending acquisition has already signalled, or will signal, this fence.
+            // Consume it before any path can reuse the fence for another acquisition.
+            if (acquisitionPending)
             {
-                if (AcquireNextImage(gd.Device, VkSemaphore.Null, imageAvailableFence))
-                {
-                    vkWaitForFences(gd.Device, 1, ref imageAvailableFence, true, ulong.MaxValue);
-                    vkResetFences(gd.Device, 1, ref imageAvailableFence);
-                    InitialiseAcquiredImage();
-                }
+                CheckResult(vkWaitForFences(gd.Device, 1, ref imageAvailableFence, true, ulong.MaxValue));
+                CheckResult(vkResetFences(gd.Device, 1, ref imageAvailableFence));
+                acquisitionPending = false;
             }
+
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                if (!createSwapchain(width, height))
+                    throw new VeldridException("The Vulkan surface has no drawable extent; rendering must be suspended before resizing.");
+
+                // Keep exclusive acquisition out of this recovery loop to avoid repeatedly
+                // losing ownership while the operating system is changing the display mode.
+                var result = acquireImage(gd.Device, VkSemaphore.Null, imageAvailableFence);
+                if ((int)result == VkFullScreenExclusive.ModeLost)
+                {
+                    fullScreenExclusive?.Lost();
+                    continue;
+                }
+                if (result == VkResult.ErrorOutOfDateKHR)
+                    continue;
+                if (result != VkResult.Success && result != VkResult.SuboptimalKHR)
+                    CheckResult(result);
+
+                framebuffer.SetImageIndex(currentImageIndex);
+                CheckResult(vkWaitForFences(gd.Device, 1, ref imageAvailableFence, true, ulong.MaxValue));
+                CheckResult(vkResetFences(gd.Device, 1, ref imageAvailableFence));
+                InitialiseAcquiredImage();
+                return;
+            }
+            throw new VeldridException("The Vulkan swapchain remained out of date after three recreation attempts.");
         }
 
         private bool createSwapchain(uint width, uint height)
@@ -222,6 +249,10 @@ namespace Veldrid.Vk
             // Obtain the surface capabilities first -- this will indicate whether the surface has been lost.
             var result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gd.PhysicalDevice, Surface, out var surfaceCapabilities);
             if (result == VkResult.ErrorSurfaceLostKHR) throw new VeldridException("The Swapchain's underlying surface has been lost.");
+            CheckResult(result);
+
+            if (surfaceCapabilities.currentExtent.width == 0 || surfaceCapabilities.currentExtent.height == 0)
+                return false;
 
             if (surfaceCapabilities.minImageExtent.width == 0 && surfaceCapabilities.minImageExtent.height == 0
                                                               && surfaceCapabilities.maxImageExtent.width == 0 && surfaceCapabilities.maxImageExtent.height == 0)
@@ -230,12 +261,7 @@ namespace Veldrid.Vk
             if (deviceSwapchain != VkSwapchainKHR.Null) gd.WaitForIdle();
 
             currentImageIndex = 0;
-            uint surfaceFormatCount = 0;
-            result = vkGetPhysicalDeviceSurfaceFormatsKHR(gd.PhysicalDevice, Surface, ref surfaceFormatCount, null);
-            CheckResult(result);
-            var formats = new VkSurfaceFormatKHR[surfaceFormatCount];
-            result = vkGetPhysicalDeviceSurfaceFormatsKHR(gd.PhysicalDevice, Surface, ref surfaceFormatCount, out formats[0]);
-            CheckResult(result);
+            var formats = getSurfaceFormats();
 
             var desiredFormat = colorSrgb
                 ? VkFormat.B8g8r8a8Srgb
@@ -258,22 +284,37 @@ namespace Veldrid.Vk
 
                 if (surfaceFormat.format == VkFormat.Undefined)
                 {
-                    if (colorSrgb && surfaceFormat.format != VkFormat.R8g8b8a8Srgb) throw new VeldridException("Unable to create an sRGB Swapchain for this surface.");
+                    var alternateFormat = colorSrgb ? VkFormat.R8g8b8a8Srgb : VkFormat.R8g8b8a8Unorm;
+                    foreach (var format in formats)
+                    {
+                        if (format.colorSpace == VkColorSpaceKHR.SrgbNonlinearKHR && format.format == alternateFormat)
+                        {
+                            surfaceFormat = format;
+                            break;
+                        }
+                    }
 
-                    surfaceFormat = formats[0];
+                    if (surfaceFormat.format == VkFormat.Undefined)
+                    {
+                        if (colorSrgb)
+                            throw new VeldridException("Unable to create an sRGB Swapchain for this surface.");
+                        surfaceFormat = formats[0];
+                    }
                 }
             }
 
-            uint presentModeCount = 0;
-            result = vkGetPhysicalDeviceSurfacePresentModesKHR(gd.PhysicalDevice, Surface, ref presentModeCount, null);
-            CheckResult(result);
-            var presentModes = new VkPresentModeKHR[presentModeCount];
-            result = vkGetPhysicalDeviceSurfacePresentModesKHR(gd.PhysicalDevice, Surface, ref presentModeCount, out presentModes[0]);
-            CheckResult(result);
+            var presentModes = getSurfacePresentModes();
 
             fullScreenExclusiveSupported = fullScreenExclusive?.Query(Surface) == true;
             if (fullScreenExclusiveSupported)
-                presentModes = fullScreenExclusive.PresentModes(Surface);
+            {
+                var exclusiveModes = fullScreenExclusive.PresentModes(Surface);
+                fullScreenExclusiveSupported = exclusiveModes.Length > 0;
+                if (fullScreenExclusiveSupported)
+                    presentModes = exclusiveModes;
+                else
+                    Console.WriteLine("[VK FSE] exclusive presentation modes unavailable; using ordinary Vulkan presentation.");
+            }
 
             var presentMode = VkPresentModeKHR.FifoKHR;
 
@@ -301,19 +342,33 @@ namespace Veldrid.Vk
 
             var swapchainCi = VkSwapchainCreateInfoKHR.New();
             swapchainCi.surface = Surface;
+            if (gd.PreferredPresentMode >= 0 && gd.PreferredPresentMode <= 2)
+            {
+                var preferred = (VkPresentModeKHR)gd.PreferredPresentMode;
+                presentMode = presentModes.Contains(preferred) ? preferred : VkPresentModeKHR.FifoKHR;
+            }
             swapchainCi.presentMode = presentMode;
             swapchainCi.imageFormat = surfaceFormat.format;
             swapchainCi.imageColorSpace = surfaceFormat.colorSpace;
             uint clampedWidth = Util.Clamp(width, surfaceCapabilities.minImageExtent.width, surfaceCapabilities.maxImageExtent.width);
             uint clampedHeight = Util.Clamp(height, surfaceCapabilities.minImageExtent.height, surfaceCapabilities.maxImageExtent.height);
-            swapchainCi.imageExtent = new VkExtent2D { width = clampedWidth, height = clampedHeight };
+            swapchainCi.imageExtent = surfaceCapabilities.currentExtent.width != uint.MaxValue
+                ? surfaceCapabilities.currentExtent
+                : new VkExtent2D { width = clampedWidth, height = clampedHeight };
             swapchainCi.minImageCount = imageCount;
             swapchainCi.imageArrayLayers = 1;
-            swapchainCi.imageUsage = VkImageUsageFlags.ColorAttachment | VkImageUsageFlags.TransferDst;
+            // Initialisation clears each acquired image via a transfer operation.
+            const VkImageUsageFlags requiredUsage = VkImageUsageFlags.ColorAttachment | VkImageUsageFlags.TransferDst;
+            if ((surfaceCapabilities.supportedUsageFlags & requiredUsage) != requiredUsage)
+                throw new VeldridException("The Vulkan surface requires colour-attachment and transfer-destination support.");
+            swapchainCi.imageUsage = requiredUsage;
+            // Capture is optional: unsupported surfaces must still be able to present.
+            if ((surfaceCapabilities.supportedUsageFlags & VkImageUsageFlags.TransferSrc) != 0)
+                swapchainCi.imageUsage |= VkImageUsageFlags.TransferSrc;
 
-            var queueFamilyIndices = new FixedArray2<uint>(gd.GraphicsQueueIndex, gd.PresentQueueIndex);
+            var queueFamilyIndices = new FixedArray2<uint>(gd.GraphicsQueueIndex, presentQueueIndex);
 
-            if (gd.GraphicsQueueIndex != gd.PresentQueueIndex)
+            if (gd.GraphicsQueueIndex != presentQueueIndex)
             {
                 swapchainCi.imageSharingMode = VkSharingMode.Concurrent;
                 swapchainCi.queueFamilyIndexCount = 2;
@@ -325,8 +380,13 @@ namespace Veldrid.Vk
                 swapchainCi.queueFamilyIndexCount = 0;
             }
 
-            swapchainCi.preTransform = VkSurfaceTransformFlagsKHR.IdentityKHR;
-            swapchainCi.compositeAlpha = VkCompositeAlphaFlagsKHR.OpaqueKHR;
+            swapchainCi.preTransform = (surfaceCapabilities.supportedTransforms & VkSurfaceTransformFlagsKHR.IdentityKHR) != 0
+                ? VkSurfaceTransformFlagsKHR.IdentityKHR : surfaceCapabilities.currentTransform;
+            // Prefer opaque, then select the first supported compositing mode.
+            uint alphaFlags = (uint)surfaceCapabilities.supportedCompositeAlpha;
+            if (alphaFlags == 0)
+                throw new VeldridException("The Vulkan surface advertises no composite alpha modes.");
+            swapchainCi.compositeAlpha = (VkCompositeAlphaFlagsKHR)(alphaFlags & (~alphaFlags + 1u));
             swapchainCi.clipped = true;
 
             var oldSwapchain = deviceSwapchain;
@@ -339,13 +399,57 @@ namespace Veldrid.Vk
             if (fullScreenExclusiveSupported)
                 swapchainCi.pNext = &exclusiveInfo;
 
-            result = vkCreateSwapchainKHR(gd.Device, ref swapchainCi, null, out deviceSwapchain);
+            result = vkCreateSwapchainKHR(gd.Device, ref swapchainCi, null, out var replacement);
             CheckResult(result);
+            deviceSwapchain = replacement;
             if (oldSwapchain != VkSwapchainKHR.Null) vkDestroySwapchainKHR(gd.Device, oldSwapchain, null);
 
+            SupportsFrameCapture = (swapchainCi.imageUsage & VkImageUsageFlags.TransferSrc) != 0;
             currentPresentMode = presentMode;
             framebuffer.SetNewSwapchain(deviceSwapchain, width, height, surfaceFormat, swapchainCi.imageExtent);
             return true;
+        }
+
+        private VkSurfaceFormatKHR[] getSurfaceFormats()
+        {
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                uint count = 0;
+                CheckResult(vkGetPhysicalDeviceSurfaceFormatsKHR(gd.PhysicalDevice, Surface, ref count, null));
+                if (count == 0)
+                    throw new VeldridException("The Vulkan surface advertises no colour formats.");
+                var formats = new VkSurfaceFormatKHR[count];
+                var result = vkGetPhysicalDeviceSurfaceFormatsKHR(gd.PhysicalDevice, Surface, ref count, out formats[0]);
+                if (result == VkResult.Incomplete)
+                    continue;
+                CheckResult(result);
+                if (count == 0)
+                    continue;
+                Array.Resize(ref formats, (int)count);
+                return formats;
+            }
+            throw new VeldridException("Vulkan surface format enumeration did not stabilise.");
+        }
+
+        private VkPresentModeKHR[] getSurfacePresentModes()
+        {
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                uint count = 0;
+                CheckResult(vkGetPhysicalDeviceSurfacePresentModesKHR(gd.PhysicalDevice, Surface, ref count, null));
+                if (count == 0)
+                    throw new VeldridException("The Vulkan surface advertises no presentation modes.");
+                var modes = new VkPresentModeKHR[count];
+                var result = vkGetPhysicalDeviceSurfacePresentModesKHR(gd.PhysicalDevice, Surface, ref count, out modes[0]);
+                if (result == VkResult.Incomplete)
+                    continue;
+                CheckResult(result);
+                if (count == 0)
+                    continue;
+                Array.Resize(ref modes, (int)count);
+                return modes;
+            }
+            throw new VeldridException("Vulkan presentation mode enumeration did not stabilise.");
         }
 
         private bool getPresentQueueIndex(out uint queueFamilyIndex)

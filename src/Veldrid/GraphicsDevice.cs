@@ -69,6 +69,15 @@ namespace Veldrid
         public virtual bool FullScreenExclusiveEnabled { get; protected set; }
 
         /// <summary>
+        /// Whether the application's selected window mode permits exclusive ownership.
+        /// Updated by the host on the render thread independently of tearing and VRR.
+        /// </summary>
+        public virtual bool ExclusiveFullscreenAllowed { get; set; }
+
+        /// <summary>The host-selected display refresh rate for DXGI exclusive mode, in hertz.</summary>
+        public double FullscreenRefreshRate { get; set; }
+
+        /// <summary>
         ///     Retrieves the main Swapchain for this device. This property is only valid if the device was created with a main
         ///     Swapchain, and will return null otherwise.
         /// </summary>

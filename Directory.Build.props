@@ -1,4 +1,4 @@
-<Project>
+﻿<Project>
 
   <PropertyGroup>
     <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
@@ -15,11 +15,13 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <PackageLicenseUrl>https://raw.githubusercontent.com/ppy/veldrid/master/LICENSE</PackageLicenseUrl>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
     <Copyright>Copyright 2024 (c) Eric Mellino and Veldrid contributors. All rights reserved.</Copyright>
     <Authors>Eric Mellino, ppy Pty Ltd</Authors>
-    <RepositoryUrl>https://github.com/ppy/veldrid</RepositoryUrl>
+    <RepositoryUrl>https://github.com/GooGuTeam/g0v0-veldrid</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/GooGuTeam/g0v0-veldrid</PackageProjectUrl>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageReadmeFile>g0v0-release.md</PackageReadmeFile>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -33,6 +35,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="$(RepositoryRootDirectory)LICENSE" Pack="true" PackagePath="/" />
+    <None Include="$(RepositoryRootDirectory)docs/g0v0-release.md" Pack="true" PackagePath="/" />
     <PackageReference Include="Nerdbank.GitVersioning" Version="$(NerdbankGitVersioningVersion)">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>

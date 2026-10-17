@@ -18,7 +18,7 @@ namespace Veldrid.D3D11
         {
             get
             {
-                if (AllowTearing && canTear && !SyncToVerticalBlank)
+                if ((flags & SwapChainFlags.AllowTearing) != 0 && !exclusiveFullscreen && !SyncToVerticalBlank)
                     return PresentFlags.AllowTearing;
 
                 return PresentFlags.None;
@@ -101,9 +101,12 @@ namespace Veldrid.D3D11
         private SwapChainFlags flags;
         private bool disposed;
         private FrameLatencyWaitHandle frameLatencyWaitHandle;
+        public bool FrameLatencyWaitActive => frameLatencyWaitHandle != null;
         private readonly HashSet<D3D11CommandList> referencedCLs = new HashSet<D3D11CommandList>();
 
         private bool allowTearing;
+        private bool exclusiveFullscreen;
+        private long nextExclusiveAttempt;
 
         private uint width;
         private uint height;
@@ -146,6 +149,9 @@ namespace Veldrid.D3D11
             {
                 depthTexture?.Dispose();
                 framebuffer.Dispose();
+                backBufferTexture?.Dispose();
+                if (exclusiveFullscreen)
+                    DxgiSwapChain.SetFullscreenState(false, null);
                 DxgiSwapChain.Dispose();
                 frameLatencyWaitHandle?.Dispose();
                 frameLatencyWaitHandle = null;
@@ -225,15 +231,25 @@ namespace Veldrid.D3D11
 
         private void recreateSwapchain()
         {
-            DxgiSwapChain?.Release();
-            DxgiSwapChain?.Dispose();
-            DxgiSwapChain = null;
-
+            if (exclusiveFullscreen)
+                DxgiSwapChain?.SetFullscreenState(false, null);
+            exclusiveFullscreen = false;
+            gd.PrepareSwapchainResize();
+            lock (referencedCLsLock)
+            {
+                foreach (var cl in referencedCLs) cl.Reset();
+                referencedCLs.Clear();
+            }
             framebuffer?.Dispose();
             framebuffer = null;
 
             depthTexture?.Dispose();
             depthTexture = null;
+            backBufferTexture?.Dispose();
+            backBufferTexture = null;
+            // Dispose releases the owned COM reference; an additional Release would double-release it.
+            DxgiSwapChain?.Dispose();
+            DxgiSwapChain = null;
 
             frameLatencyWaitHandle?.Dispose();
             frameLatencyWaitHandle = null;
@@ -248,15 +264,15 @@ namespace Veldrid.D3D11
 
             var swapEffect = canUseFlipDiscard ? SwapEffect.FlipDiscard : SwapEffect.Discard;
 
-            flags = SwapChainFlags.None;
+            flags = gd.PreferExclusiveFullscreen ? SwapChainFlags.AllowModeSwitch : SwapChainFlags.None;
 
-            if (AllowTearing && canTear && canUseFlipDiscard)
+            if (!gd.PreferExclusiveFullscreen && AllowTearing && canTear && canUseFlipDiscard)
                 flags |= SwapChainFlags.AllowTearing;
 
             // ALLOW_TEARING and FRAME_LATENCY_WAITABLE_OBJECT can coexist on a
             // windowed flip-model swapchain. Do not disable pacing simply because
             // the caller permits tearing (e.g. borderless fullscreen).
-            if (canCreateFrameLatencyWaitableObject && canUseFlipDiscard
+            if (!gd.PreferExclusiveFullscreen && canCreateFrameLatencyWaitableObject && canUseFlipDiscard
                 && (lowLatencyPresentation || !(AllowTearing && canTear)))
                 flags |= SwapChainFlags.FrameLatencyWaitableObject;
 
@@ -328,13 +344,127 @@ namespace Veldrid.D3D11
                     if (swapChain2 != null)
                     {
                         swapChain2.MaximumFrameLatency = 1;
-                        frameLatencyWaitHandle = new FrameLatencyWaitHandle(swapChain2.FrameLatencyWaitableObject);
+                        IntPtr waitableObject = swapChain2.FrameLatencyWaitableObject;
+                        if (waitableObject != IntPtr.Zero && waitableObject != new IntPtr(-1))
+                            frameLatencyWaitHandle = new FrameLatencyWaitHandle(waitableObject);
                     }
                 }
             }
 
             Resize(width, height);
         }
+
+        internal void UpdateExclusiveFullscreen()
+        {
+            if (!gd.PreferExclusiveFullscreen || !(description.Source is Win32SwapchainSource win32))
+                return;
+
+            var monitor = MonitorFromWindow(win32.Hwnd, 2);
+            var info = new MonitorInfo { Size = (uint)Marshal.SizeOf<MonitorInfo>() };
+            bool eligible = gd.ExclusiveFullscreenAllowed && GetForegroundWindow() == win32.Hwnd && !IsIconic(win32.Hwnd)
+                            && GetWindowRect(win32.Hwnd, out var rect) && GetMonitorInfo(monitor, ref info)
+                            && rect.Left == info.Bounds.Left && rect.Top == info.Bounds.Top
+                            && rect.Right == info.Bounds.Right && rect.Bottom == info.Bounds.Bottom;
+
+            var stateResult = DxgiSwapChain.GetFullscreenState(out var actual, out var output);
+            output?.Dispose();
+            if (stateResult.Success)
+                exclusiveFullscreen = actual;
+            if (eligible == exclusiveFullscreen || (eligible && Environment.TickCount64 < nextExclusiveAttempt))
+                return;
+
+            nextExclusiveAttempt = Environment.TickCount64 + 2000;
+            if (eligible)
+            {
+                tryEnterExclusive(monitor);
+                return;
+            }
+
+            if (DxgiSwapChain.SetFullscreenState(false, null).Success)
+            {
+                exclusiveFullscreen = false;
+                // Flip-model DXGI requires ResizeBuffers after changing fullscreen ownership.
+                gd.PrepareSwapchainResize();
+                Resize(width, height);
+            }
+        }
+
+        private bool tryEnterExclusive(IntPtr monitor)
+        {
+            double requestedRate = gd.FullscreenRefreshRate;
+            if (!double.IsFinite(requestedRate) || requestedRate <= 0)
+                return false;
+
+            for (int index = 0; gd.Adapter.EnumOutputs(index, out var target).Success; index++)
+            {
+                using (target)
+                {
+                    if (target.Description.Monitor != monitor)
+                        continue;
+
+                    // Select from advertised progressive modes and preserve the exact rational refresh rate.
+                    ModeDescription[] modes;
+                    try
+                    {
+                        modes = target.GetDisplayModeList(colorFormat, 0);
+                    }
+                    catch (SharpGenException ex)
+                    {
+                        Console.WriteLine($"[DXGI FSE] display mode enumeration failed: {ex.ResultCode}");
+                        return false;
+                    }
+
+                    ModeDescription? selected = null;
+                    double bestDifference = double.MaxValue;
+                    for (int i = 0; i < modes.Length; i++)
+                    {
+                        var mode = modes[i];
+                        if (mode.Width != width || mode.Height != height || mode.RefreshRate.Denominator == 0
+                            || mode.RefreshRate.Numerator == 0)
+                            continue;
+                        double rate = (double)mode.RefreshRate.Numerator / mode.RefreshRate.Denominator;
+                        double difference = Math.Abs(rate - requestedRate);
+                        if (difference < bestDifference)
+                        {
+                            selected = mode;
+                            bestDifference = difference;
+                        }
+                    }
+
+                    if (!selected.HasValue)
+                        return false;
+                    var chosen = selected.Value;
+                    var enter = DxgiSwapChain.SetFullscreenState(true, target);
+                    if (enter.Failure)
+                        return false;
+                    var resize = DxgiSwapChain.ResizeTarget(chosen);
+                    Console.WriteLine($"[DXGI FSE] requested {width}x{height}@{requestedRate:0.###} Hz; selected {chosen.RefreshRate.Numerator}/{chosen.RefreshRate.Denominator} Hz; ResizeTarget: {resize}");
+                    if (resize.Failure)
+                    {
+                        // Do not retain an exclusive mode whose timing was not successfully requested.
+                        var rollback = DxgiSwapChain.SetFullscreenState(false, null);
+                        exclusiveFullscreen = rollback.Failure;
+                    }
+                    else
+                        exclusiveFullscreen = true;
+                    // Both entry and rollback require rebuilding flip-model backbuffers.
+                    gd.PrepareSwapchainResize();
+                    Resize(width, height);
+                    return resize.Success;
+                }
+            }
+            return false;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Rect { public int Left, Top, Right, Bottom; }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MonitorInfo { public uint Size; public Rect Bounds, Work; public uint Flags; }
+        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
+        [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window, out Rect rect);
+        [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW")] private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+        [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr window);
 
         private class FrameLatencyWaitHandle : WaitHandle
         {

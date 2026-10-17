@@ -51,6 +51,25 @@ namespace Veldrid.D3D11
 
         public override GraphicsDeviceFeatures Features { get; }
 
+        internal bool PreferExclusiveFullscreen { get; private set; }
+
+        public override bool ExclusiveFullscreenAllowed
+        {
+            get => base.ExclusiveFullscreenAllowed;
+            set
+            {
+                if (base.ExclusiveFullscreenAllowed == value)
+                    return;
+                base.ExclusiveFullscreenAllowed = value;
+                if (!value && mainSwapchain != null)
+                {
+                    // Release ownership before the host resizes or recreates the swapchain.
+                    lock (immediateContextLock)
+                        mainSwapchain.UpdateExclusiveFullscreen();
+                }
+            }
+        }
+
         public override bool AllowTearing
         {
             get => mainSwapchain.AllowTearing;
@@ -81,12 +100,12 @@ namespace Veldrid.D3D11
         public D3D11GraphicsDevice(GraphicsDeviceOptions options, D3D11DeviceOptions d3D11DeviceOptions, SwapchainDescription? swapchainDesc)
             : this(mergeOptions(d3D11DeviceOptions, options), swapchainDesc)
         {
-            LowLatencyPresentation = options.LowLatency || Environment.GetEnvironmentVariable("VELDRID_LOW_LATENCY") != "0";
         }
 
         public D3D11GraphicsDevice(D3D11DeviceOptions options, SwapchainDescription? swapchainDesc)
         {
-            LowLatencyPresentation = Environment.GetEnvironmentVariable("VELDRID_LOW_LATENCY") != "0";
+            PreferExclusiveFullscreen = options.PreferExclusiveFullscreen;
+            LowLatencyPresentation = options.LowLatency || Environment.GetEnvironmentVariable("VELDRID_LOW_LATENCY") != "0";
             var flags = (DeviceCreationFlags)options.DeviceCreationFlags;
 #if DEBUG
             flags |= DeviceCreationFlags.Debug;
@@ -432,6 +451,8 @@ namespace Veldrid.D3D11
 
         private static D3D11DeviceOptions mergeOptions(D3D11DeviceOptions d3D11DeviceOptions, GraphicsDeviceOptions options)
         {
+            d3D11DeviceOptions.PreferExclusiveFullscreen = options.PreferExclusiveFullscreen;
+            d3D11DeviceOptions.LowLatency = options.LowLatency;
             if (options.Debug) d3D11DeviceOptions.DeviceCreationFlags |= (uint)DeviceCreationFlags.Debug;
 
             return d3D11DeviceOptions;
@@ -509,7 +530,15 @@ namespace Veldrid.D3D11
             {
                 var d3d11Sc = Util.AssertSubtype<Swapchain, D3D11Swapchain>(swapchain);
                 d3d11Sc.DxgiSwapChain.Present(d3d11Sc.SyncInterval, d3d11Sc.PresentFlags);
+                d3d11Sc.UpdateExclusiveFullscreen();
             }
+        }
+
+        internal void PrepareSwapchainResize()
+        {
+            // Release immediate-context references before DXGI replaces the backbuffers.
+            immediateContext.ClearState();
+            immediateContext.Flush();
         }
 
         private protected override bool GetPixelFormatSupportCore(

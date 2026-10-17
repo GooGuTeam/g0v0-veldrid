@@ -1,0 +1,8 @@
+﻿<Project>
+  <Target Name="SetForkPackageVersion" AfterTargets="GetBuildVersion" Condition="'$(G0V0PackageVersion)' != ''">
+    <PropertyGroup>
+      <PackageVersion>$(G0V0PackageVersion)</PackageVersion>
+      <NuGetPackageVersion>$(G0V0PackageVersion)</NuGetPackageVersion>
+    </PropertyGroup>
+  </Target>
+</Project>

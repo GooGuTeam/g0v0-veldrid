@@ -67,6 +67,15 @@ namespace Veldrid
         /// </summary>
         public bool FullScreenExclusive;
 
+        /// <summary>Prefer DXGI exclusive ownership when the window covers the focused monitor.</summary>
+        public bool PreferExclusiveFullscreen;
+
+        /// <summary>Override automatic Vulkan FSE extension negotiation.</summary>
+        public bool? RequestVulkanExclusiveFullscreen;
+
+        /// <summary>Preferred Vulkan mode: 0 Immediate, 1 Mailbox, 2 FIFO; null or -1 selects automatically.</summary>
+        public int? PreferredVulkanPresentMode;
+
         /// <summary>
         ///     Constructs a new GraphicsDeviceOptions for a device with no main Swapchain.
         /// </summary>
