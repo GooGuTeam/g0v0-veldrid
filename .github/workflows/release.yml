@@ -1,0 +1,151 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*-g0v0'
+      - 'v*-g0v0.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'NuGet version to publish (for example 4.9.0-g0v0.2). Must match the tag when dispatching on a tag.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_VERSION: '8.0.x'
+
+jobs:
+  version:
+    name: Compute version
+    runs-on: ubuntu-latest
+    outputs:
+      nugetVersion: ${{ steps.version.outputs.nugetVersion }}
+    steps:
+      - name: Determine version
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            VERSION="${INPUT_VERSION#v}"
+          else
+            VERSION="${REF_NAME#v}"
+          fi
+
+          # Preserve the prerelease suffix; do not publish a prerelease as stable.
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-g0v0(\.(0|[1-9][0-9]*))?)?$ ]]; then
+            echo 'Expected a version such as 4.9.0 or 4.9.0-g0v0.2.' >&2
+            exit 1
+          fi
+          if [[ "$REF_TYPE" == 'tag' && "${REF_NAME#v}" != "$VERSION" ]]; then
+            echo 'The requested version must match the selected tag.' >&2
+            exit 1
+          fi
+          echo "nugetVersion=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing NuGet version: $VERSION"
+
+  nuget:
+    name: Pack & Publish NuGet
+    if: github.repository == 'GooGuTeam/g0v0-veldrid'
+    needs: version
+    concurrency:
+      group: release-${{ needs.version.outputs.nugetVersion }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Pack
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.nugetVersion }}
+        run: |
+          dotnet pack src/Veldrid.sln -c Release -warnaserror \
+            -p:NoWarn=1591 \
+            -p:G0V0PackageVersion="$PACKAGE_VERSION" \
+            -p:GenerateDocumentationFile=true \
+            -p:IncludeSymbols=true \
+            -p:SymbolPackageFormat=snupkg \
+            -o artifacts
+
+      - name: Verify package identities and dependencies
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.nugetVersion }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          from zipfile import ZipFile
+
+          expected = {'g0v0.Veldrid', 'g0v0.Veldrid.MetalBindings', 'g0v0.Veldrid.OpenGLBindings', 'g0v0.Veldrid.SPIRV'}
+          found = set()
+          packages = list(Path('artifacts').glob('*.nupkg'))
+          assert len(packages) == len(expected), 'Unexpected package count'
+          for package in packages:
+              with ZipFile(package) as archive:
+                  metadata = ET.fromstring(archive.read(next(n for n in archive.namelist() if n.endswith('.nuspec'))))
+                  package_id = metadata.find('.//{*}id').text
+                  version = metadata.find('.//{*}version').text
+                  assert package_id in expected and package_id not in found, package_id
+                  assert version == os.environ['PACKAGE_VERSION'], version
+                  assert 'LICENSE' in archive.namelist(), 'Missing upstream licence'
+                  dependencies = {d.attrib['id']: d.attrib['version'] for d in metadata.findall('.//{*}dependency')}
+                  assert not any(d.startswith('ppy.Veldrid') for d in dependencies), dependencies
+                  if package_id == 'g0v0.Veldrid':
+                      for binding in ('g0v0.Veldrid.MetalBindings', 'g0v0.Veldrid.OpenGLBindings'):
+                          assert dependencies.get(binding) == version, dependencies
+                  if package_id == 'g0v0.Veldrid.SPIRV':
+                      assert dependencies.get('g0v0.Veldrid') == version, dependencies
+                      assert any(n.startswith('runtimes/win-x64/native/') for n in archive.namelist()), 'Missing native SPIRV assets'
+                      assert 'LICENSE-SPIRV' in archive.namelist(), 'Missing SPIRV licence'
+                  found.add(package_id)
+                  assert package.with_suffix('.snupkg').is_file(), 'Missing symbols package'
+          assert found == expected, found
+          PY
+
+      - name: Upload NuGet artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: nuget-packages
+          path: |
+            artifacts/g0v0.*.nupkg
+            artifacts/g0v0.*.snupkg
+          if-no-files-found: error
+
+      - name: NuGet login
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Publish to NuGet.org
+        env:
+          NUGET_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: dotnet nuget push 'artifacts/g0v0.*.nupkg' --api-key "$NUGET_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - name: Publish to GitHub Packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: dotnet nuget push 'artifacts/g0v0.*.nupkg' --api-key "$GITHUB_TOKEN" --source "https://nuget.pkg.github.com/$REPOSITORY_OWNER/index.json" --skip-duplicate

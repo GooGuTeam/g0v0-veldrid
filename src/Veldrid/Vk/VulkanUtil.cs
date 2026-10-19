@@ -10,7 +10,6 @@ namespace Veldrid.Vk
         private static readonly Lazy<bool> s_is_vulkan_loaded = new Lazy<bool>(tryLoadVulkan);
         private static readonly Lazy<string[]> s_instance_extensions = new Lazy<string[]>(enumerateInstanceExtensions);
 
-        [Conditional("DEBUG")]
         public static void CheckResult(VkResult result)
         {
             if (result != VkResult.Success) throw new VeldridException("Unsuccessful VkResult: " + result);
