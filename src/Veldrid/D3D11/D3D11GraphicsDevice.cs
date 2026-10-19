@@ -200,14 +200,14 @@ namespace Veldrid.D3D11
                     break;
             }
 
+            immediateContext = device.ImmediateContext;
+            device.CheckThreadingSupport(out supportsConcurrentResources, out supportsCommandLists);
+
             if (swapchainDesc != null)
             {
                 var desc = swapchainDesc.Value;
                 mainSwapchain = new D3D11Swapchain(this, ref desc);
             }
-
-            immediateContext = device.ImmediateContext;
-            device.CheckThreadingSupport(out supportsConcurrentResources, out supportsCommandLists);
 
             IsDebugEnabled = (flags & DeviceCreationFlags.Debug) != 0;
 
@@ -537,8 +537,8 @@ namespace Veldrid.D3D11
         internal void PrepareSwapchainResize()
         {
             // Release immediate-context references before DXGI replaces the backbuffers.
-            immediateContext.ClearState();
-            immediateContext.Flush();
+            immediateContext?.ClearState();
+            immediateContext?.Flush();
         }
 
         private protected override bool GetPixelFormatSupportCore(
