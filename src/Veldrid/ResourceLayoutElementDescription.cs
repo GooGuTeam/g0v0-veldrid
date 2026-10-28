@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace Veldrid
 {
@@ -28,6 +28,16 @@ namespace Veldrid
         public ResourceLayoutElementOptions Options;
 
         /// <summary>
+        /// Number of sampled texture descriptors at this binding. Zero and one both denote a scalar binding.
+        /// Arrays are currently supported by Vulkan for <see cref="ResourceKind.TextureReadOnly"/> only,
+        /// and must be populated by a <see cref="TextureViewArray"/> in the resource set.
+        /// All entries must be supplied; partially bound and update-after-bind arrays are not supported.
+        /// </summary>
+        public uint ArrayLength;
+
+        internal uint DescriptorCount => Math.Max(1u, ArrayLength);
+
+        /// <summary>
         ///     Constructs a new ResourceLayoutElementDescription.
         /// </summary>
         /// <param name="name">The name of the element.</param>
@@ -39,6 +49,7 @@ namespace Veldrid
             Kind = kind;
             Stages = stages;
             Options = ResourceLayoutElementOptions.None;
+            ArrayLength = 0;
         }
 
         /// <summary>
@@ -58,6 +69,7 @@ namespace Veldrid
             Kind = kind;
             Stages = stages;
             Options = options;
+            ArrayLength = 0;
         }
 
         /// <summary>
@@ -67,7 +79,7 @@ namespace Veldrid
         /// <returns>True if all elements are equal; false otherswise.</returns>
         public bool Equals(ResourceLayoutElementDescription other)
         {
-            return Name == other.Name && Kind == other.Kind && Stages == other.Stages && Options == other.Options;
+            return Name == other.Name && Kind == other.Kind && Stages == other.Stages && Options == other.Options && DescriptorCount == other.DescriptorCount;
         }
 
         /// <summary>
@@ -76,7 +88,7 @@ namespace Veldrid
         /// <returns>A 32-bit signed integer that is the hash code for this instance.</returns>
         public override int GetHashCode()
         {
-            return HashHelper.Combine(Name.GetHashCode(), (int)Kind, (int)Stages, (int)Options);
+            return HashHelper.Combine(Name.GetHashCode(), (int)Kind, (int)Stages, (int)Options, (int)DescriptorCount);
         }
     }
 

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -244,6 +244,9 @@ namespace Veldrid
                 var pipelineKind = layout.Description.Elements[i].Kind;
                 var setKind = layoutDesc.Elements[i].Kind;
 
+                if (layout.Description.Elements[i].DescriptorCount != layoutDesc.Elements[i].DescriptorCount)
+                    throw new VeldridException($"Descriptor array length differs at resource element {i}.");
+
                 if (pipelineKind != setKind)
                 {
                     throw new VeldridException(
@@ -360,6 +363,9 @@ namespace Veldrid
             {
                 var pipelineKind = layout.Description.Elements[i].Kind;
                 var setKind = rs.Layout.Description.Elements[i].Kind;
+
+                if (layout.Description.Elements[i].DescriptorCount != rs.Layout.Description.Elements[i].DescriptorCount)
+                    throw new VeldridException($"Descriptor array length differs at resource element {i}.");
 
                 if (pipelineKind != setKind)
                 {

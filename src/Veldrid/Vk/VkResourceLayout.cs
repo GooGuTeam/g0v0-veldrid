@@ -1,4 +1,4 @@
-﻿using Vulkan;
+using Vulkan;
 using static Vulkan.VulkanNative;
 using static Veldrid.Vk.VulkanUtil;
 
@@ -8,6 +8,7 @@ namespace Veldrid.Vk
     {
         public VkDescriptorSetLayout DescriptorSetLayout => dsl;
         public VkDescriptorType[] DescriptorTypes { get; }
+        public uint[] DescriptorCounts { get; }
 
         public DescriptorResourceCounts DescriptorResourceCounts { get; }
         public new int DynamicBufferCount { get; }
@@ -30,12 +31,13 @@ namespace Veldrid.Vk
         private string name;
 
         public VkResourceLayout(VkGraphicsDevice gd, ref ResourceLayoutDescription description)
-            : base(ref description)
+            : base(ref description, supportsTextureArrays: true)
         {
             this.gd = gd;
             var dslCi = VkDescriptorSetLayoutCreateInfo.New();
             var elements = description.Elements;
             DescriptorTypes = new VkDescriptorType[elements.Length];
+            DescriptorCounts = new uint[elements.Length];
             var bindings = stackalloc VkDescriptorSetLayoutBinding[elements.Length];
 
             uint uniformBufferCount = 0;
@@ -48,8 +50,10 @@ namespace Veldrid.Vk
 
             for (uint i = 0; i < elements.Length; i++)
             {
+                bindings[i] = default;
                 bindings[i].binding = i;
-                bindings[i].descriptorCount = 1;
+                bindings[i].descriptorCount = elements[i].DescriptorCount;
+                DescriptorCounts[i] = elements[i].DescriptorCount;
                 var descriptorType = VkFormats.VdToVkDescriptorType(elements[i].Kind, elements[i].Options);
                 bindings[i].descriptorType = descriptorType;
                 bindings[i].stageFlags = VkFormats.VdToVkShaderStages(elements[i].Stages);
@@ -64,7 +68,7 @@ namespace Veldrid.Vk
                         break;
 
                     case VkDescriptorType.SampledImage:
-                        sampledImageCount += 1;
+                        sampledImageCount = checked(sampledImageCount + elements[i].DescriptorCount);
                         break;
 
                     case VkDescriptorType.StorageImage:
@@ -97,6 +101,9 @@ namespace Veldrid.Vk
                 storageBufferCount,
                 storageBufferDynamicCount,
                 storageImageCount);
+
+            if (sampledImageCount > gd.SampledTextureArrayLimit)
+                throw new VeldridException($"Sampled texture count {sampledImageCount} exceeds this device's array limit {gd.SampledTextureArrayLimit}.");
 
             dslCi.bindingCount = (uint)elements.Length;
             dslCi.pBindings = bindings;

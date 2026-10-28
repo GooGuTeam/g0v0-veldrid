@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 
 namespace Veldrid
 {
@@ -17,7 +17,18 @@ namespace Veldrid
                     $"The number of resources specified ({resources.Length}) must be equal to the number of resources in the {nameof(ResourceLayout)} ({elements.Length}).");
             }
 
-            for (uint i = 0; i < elements.Length; i++) validateResourceKind(elements[i].Kind, resources[i], i);
+            for (uint i = 0; i < elements.Length; i++)
+            {
+                if (elements[i].DescriptorCount > 1)
+                {
+                    if (resources[i] is not TextureViewArray array || array.Count != elements[i].DescriptorCount)
+                        throw new VeldridException($"Texture array in slot {i} must contain {elements[i].DescriptorCount} views.");
+                    for (int j = 0; j < array.Count; j++)
+                        validateResourceKind(elements[i].Kind, array[j], i);
+                }
+                else
+                    validateResourceKind(elements[i].Kind, resources[i], i);
+            }
 
             for (int i = 0; i < description.Layout.Description.Elements.Length; i++)
             {

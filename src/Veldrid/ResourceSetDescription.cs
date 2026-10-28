@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace Veldrid
 {
@@ -15,6 +15,7 @@ namespace Veldrid
         /// <summary>
         ///     An array of <see cref="IBindableResource" /> objects.
         ///     The number and type of resources must match those specified in the <see cref="ResourceLayout" />.
+        ///     A sampled texture array occupies one entry containing a <see cref="TextureViewArray"/>.
         /// </summary>
         public IBindableResource[] BoundResources;
 

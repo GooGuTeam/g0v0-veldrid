@@ -120,6 +120,9 @@ namespace Veldrid.Vk
         internal int PreferredPresentMode { get; }
         private bool standardClipYDirection;
         private VkGetPhysicalDeviceProperties2T getPhysicalDeviceProperties2;
+        internal bool TextureDescriptorIndexingEnabled { get; private set; }
+        internal uint SampledTextureArrayLimit => Math.Min(physicalDeviceProperties.limits.maxPerStageDescriptorSampledImages,
+            Math.Min(physicalDeviceProperties.limits.maxDescriptorSetSampledImages, physicalDeviceProperties.limits.maxPerStageResources));
 
         public VkGraphicsDevice(GraphicsDeviceOptions options, SwapchainDescription? scDesc)
             : this(options, scDesc, new VulkanDeviceOptions())
@@ -1001,6 +1004,14 @@ namespace Veldrid.Vk
             var props = GetDeviceExtensionProperties();
 
             var requiredInstanceExtensions = new HashSet<string>(options.DeviceExtensions ?? Array.Empty<string>());
+            VkTextureDescriptorIndexing.Features descriptorIndexing = default;
+            if (options.EnableTextureDescriptorIndexing && getPhysicalDeviceProperties2 != null)
+            {
+                var available = new HashSet<string>();
+                foreach (var property in props)
+                    available.Add(Util.GetString(property.extensionName));
+                descriptorIndexing = VkTextureDescriptorIndexing.QueryEnabledFeatures(this, available, requiredInstanceExtensions);
+            }
             if (FullScreenExclusiveEnabled)
             {
                 bool supported = false;
@@ -1096,6 +1107,8 @@ namespace Veldrid.Vk
             deviceCreateInfo.pQueueCreateInfos = queueCreateInfos;
 
             deviceCreateInfo.pEnabledFeatures = &deviceFeatures;
+            if (descriptorIndexing.SType != 0)
+                deviceCreateInfo.pNext = &descriptorIndexing;
 
             // Device layers are obsolete; enabled instance layers already intercept device calls.
             deviceCreateInfo.enabledLayerCount = 0;
@@ -1108,6 +1121,7 @@ namespace Veldrid.Vk
 
                 var result = vkCreateDevice(PhysicalDevice, ref deviceCreateInfo, null, out device);
                 CheckResult(result);
+                TextureDescriptorIndexingEnabled = descriptorIndexing.SType != 0;
             }
 
             vkGetDeviceQueue(device, GraphicsQueueIndex, 0, out graphicsQueue);
