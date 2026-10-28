@@ -1,0 +1,29 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>g0v0.Veldrid.SPIRV</PackageId>
+    <IsPackable>true</IsPackable>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>ppy.Veldrid.SPIRV</AssemblyName>
+    <PackageLicenseFile>LICENSE-SPIRV</PackageLicenseFile>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Authors>Eric Mellino, ppy Pty Ltd, GooGuTeam</Authors>
+    <Description>SPIRV-Cross integration for g0v0.Veldrid. Managed sources retain upstream attribution; native assets are redistributed from the pinned ppy.Veldrid.SPIRV package.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Veldrid/Veldrid.csproj" />
+    <!-- Restore only as a pinned native asset source, never as a consumer dependency. -->
+    <PackageReference Include="ppy.Veldrid.SPIRV" Version="[1.0.15-g5911265ec3]" GeneratePathProperty="true" PrivateAssets="all" ExcludeAssets="all" />
+    <PackageReference Include="ppy.Veldrid" Version="[4.9.69-ga405fe8484]" PrivateAssets="all" ExcludeAssets="all" />
+    <PackageReference Include="ppy.Veldrid.MetalBindings" Version="[4.9.69-ga405fe8484]" PrivateAssets="all" ExcludeAssets="all" />
+    <PackageReference Include="ppy.Veldrid.OpenGLBindings" Version="[4.9.69-ga405fe8484]" PrivateAssets="all" ExcludeAssets="all" />
+    <None Include="LICENSE-SPIRV" Pack="true" PackagePath="/" />
+    <None Include="upstream-source.json" Pack="true" PackagePath="/" />
+  </ItemGroup>
+  <Target Name="IncludeUpstreamSpirvNativeAssets" BeforeTargets="AssignTargetPaths;_GetPackageFiles" DependsOnTargets="ResolvePackageAssets">
+    <Error Condition="!Exists('$(Pkgppy_Veldrid_SPIRV)/runtimes/win-x64/native/libveldrid-spirv.dll')" Text="The pinned upstream SPIRV native assets were not restored." />
+    <ItemGroup>
+      <_SpirvNativeAsset Include="$(Pkgppy_Veldrid_SPIRV)/runtimes/**/*" />
+      <None Include="@(_SpirvNativeAsset)" Pack="true" PackagePath="runtimes/" Link="runtimes/%(_SpirvNativeAsset.RecursiveDir)%(_SpirvNativeAsset.Filename)%(_SpirvNativeAsset.Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
+</Project>

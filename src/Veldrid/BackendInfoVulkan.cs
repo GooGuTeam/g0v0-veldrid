@@ -50,6 +50,18 @@ namespace Veldrid
         public bool Win32CaptureInteropEnabled => gd.Win32CaptureInteropEnabled;
 
         /// <summary>
+        /// Whether sampled-image non-uniform indexing and runtime descriptor arrays were enabled
+        /// on this logical device. Resource sets remain fully populated and immutable after creation.
+        /// </summary>
+        public bool TextureDescriptorIndexingEnabled => gd.TextureDescriptorIndexingEnabled;
+
+        /// <summary>
+        /// Upper bound for a sampled-image array before accounting for other resources in a pipeline.
+        /// Pipeline-wide per-stage and descriptor-set limits still apply.
+        /// </summary>
+        public uint SampledTextureArrayLimit => gd.SampledTextureArrayLimit;
+
+        /// <summary>
         /// Submits an externally recorded capture command buffer using Veldrid's
         /// graphics queue lock and acquired-image ordering. Call on the render thread
         /// after rendering and before presentation. A native VkSubmitInfo pNext chain

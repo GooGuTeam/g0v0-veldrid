@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace Veldrid
 {
@@ -20,8 +20,17 @@ namespace Veldrid
         /// </summary>
         public abstract string Name { get; set; }
 
-        internal ResourceLayout(ref ResourceLayoutDescription description)
+        internal ResourceLayout(ref ResourceLayoutDescription description, bool supportsTextureArrays = false)
         {
+            foreach (var element in description.Elements)
+            {
+                if (element.DescriptorCount <= 1)
+                    continue;
+                if (!supportsTextureArrays)
+                    throw new VeldridException("Texture descriptor arrays are only supported by the Vulkan backend.");
+                if (element.Kind != ResourceKind.TextureReadOnly || element.Options != ResourceLayoutElementOptions.None)
+                    throw new VeldridException("Only sampled texture bindings without additional options can be arrays.");
+            }
 #if VALIDATE_USAGE
             Description = description;
 

@@ -24,6 +24,13 @@ namespace Veldrid
         public bool EnableWin32CaptureInterop;
 
         /// <summary>
+        /// Requests sampled-image non-uniform indexing and runtime descriptor arrays when the
+        /// Vulkan 1.0 extension dependency bundle is available. Unsupported devices keep scalar rendering.
+        /// This does not enable partially bound descriptors or updates after binding.
+        /// </summary>
+        public bool EnableTextureDescriptorIndexing;
+
+        /// <summary>
         ///     Constructs a new VulkanDeviceOptions.
         /// </summary>
         /// <param name="instanceExtensions">
@@ -39,6 +46,7 @@ namespace Veldrid
             InstanceExtensions = instanceExtensions;
             DeviceExtensions = deviceExtensions;
             EnableWin32CaptureInterop = false;
+            EnableTextureDescriptorIndexing = false;
         }
     }
 }

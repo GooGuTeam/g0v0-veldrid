@@ -1,0 +1,30 @@
+{
+  "repository": "https://github.com/ppy/veldrid-spirv",
+  "commit": "5911265ec37f81935237b7e5fadf2e6a07f60a96",
+  "original_sha256": {
+    "Bool32.cs": "7e16847d3dd36f4e6bfc90f6ad0e8bd306552a787c1f210584a2d390bc710af6",
+    "CompilationResult.cs": "e24bad9adf5de5b0704c2b611e6db495231c56ef44a6d313c107102f311fa2f0",
+    "ComputeCompilationResult.cs": "df79c63509e9bf173a4b0d77dde77aeb353b2ec1f8ac81594bc583e8971e5526",
+    "CrossCompileInfo.cs": "2cc4f2f91c3c263e4da1f147f8475d5a6a7a1e34faf3fe19e85770ec4960fea5",
+    "CrossCompileOptions.cs": "0e7c888587c8c4883915c62a17cf708c513a8d60dc1cdbee22007f0e7c23ce39",
+    "CrossCompileTarget.cs": "120df0b7763e912b96086e23e0c7476b957b27325412a0f34c77297f7048fd8e",
+    "GlslCompileInfo.cs": "e19036502d84705973ed9307b648f6002bd90063a2b644313039e0ac2a293788",
+    "GlslCompileOptions.cs": "29603d329046ff57bdcf72d56af551dc9b63859ac84c23189db7e356f9646b6c",
+    "InteropArray.cs": "9a2d147dc64e562ed5f4aad66c3269ea94959d9258329141995e2e9b24bc9f68",
+    "MacroDefinition.cs": "ce0b19a635fd4f2e23db57495bb6e676d5c0fdcf104a545516763929ab4b1d78",
+    "NativeMacroDefinition.cs": "8f4fd8ae05e1422045149e08cf5580a31f06618ebe20cbe72b3ad546938b5ed1",
+    "NativeSpecializationConstant.cs": "dfd337f3a0ae6b74a168ca10abc34ebc3b989ae56296143990d3ab7543f59b8d",
+    "ReflectionInfo.cs": "c0b8874810c1b7d34a995811ee3f4bcdc9dcc7ada83a6f0cc635369902cccdc5",
+    "ResourceFactoryExtensions.cs": "4e043dfd6acce39649436e6193431e93df1bc4957630a72a887036a9ca33d245",
+    "ShadercShaderKind.cs": "8783db1ce01d583d82bb506f495ff66f8c0f4a0338af7f511f6cd087fd4810c7",
+    "SpirvCompilation.cs": "00b4656ae32841acd454832128f8769e97fea2a5380212a05f54977723a92a5d",
+    "SpirvCompilationException.cs": "f06af21c05082f53ef622fbb69d09041ed8f0467feb3589af3840652fb5a546b",
+    "SpirvCompilationResult.cs": "181e17937dde5143771668487e336fb9b7e7685efbf5856edb1855dc508bbcc9",
+    "SpirvReflection.cs": "a77af244631ddb4795a29b71a14484a4bcf6d2038a56a6e50a54e8cb50430845",
+    "Util.cs": "c459da0154bb98f6d4f10fe2a1ec9798826bd31ac8603b2a3e8d950fcf97cd67",
+    "VeldridSpirvNative.cs": "966fb3ba2011dab79f4a5b672d6dd8dd04a58082b4a333a78e01f648d4ff7c09",
+    "VertexFragmentCompilationInfo.cs": "e194a3c4d63994978cee461c133250e08fe95dcc36414608353b267b40a65961",
+    "LICENSE-SPIRV": "572eaca8c1d1f33846c489192c869b38a8bd22ba4e5d59f2469730d195ba6df4"
+  },
+  "normalisation": "C# files use UTF-8 without BOM and CRLF; source otherwise unchanged."
+}
